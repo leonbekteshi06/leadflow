@@ -1,7 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { supabase } from "@/lib/supabase";
-
+import { supabase } from "../lib/supabase";
 const TEAM = ["Leon", "Kent", "Lukas"];
 const STAGES = [
   { id: "new", label: "New Lead", color: "#6C7A89" },
