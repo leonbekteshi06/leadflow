@@ -26,8 +26,8 @@ const timeAgo = (ts) => { const d = Math.floor((Date.now() - new Date(ts).getTim
 
 const getSendDate = (c) => { if(!c.next_follow_up) return { text:"-", color:"#475569", bg:"transparent", isToday: false }; const d = daysDiff(todayStr(), c.next_follow_up); const isToday = d === 0; const isOverdue = d < 0; return { text: fmtEU(c.next_follow_up), color: isOverdue ? "#EF4444" : isToday ? "#F59E0B" : "#94A3B8", bg: isOverdue ? "#EF444418" : isToday ? "#F59E0B18" : "#1E293B", isToday, isOverdue }; };
 const getNurtureDate = (c) => { if(!c.next_nurture_date) return null; const d = daysDiff(todayStr(), c.next_nurture_date); const isToday = d === 0; const isOverdue = d < 0; return { text: fmtEU(c.next_nurture_date), color: isOverdue ? "#EF4444" : isToday ? "#F59E0B" : "#94A3B8", bg: isOverdue ? "#EF444418" : isToday ? "#F59E0B18" : "#1E293B", isToday, isOverdue }; };
-const needsAction = (c) => { const fu = c.next_follow_up ? daysDiff(todayStr(), c.next_follow_up) : 999; const nu = c.next_nurture_date ? daysDiff(todayStr(), c.next_nurture_date) : 999; return fu <= 0 || nu <= 0; };
-const urgency = (c) => { const fu = c.next_follow_up ? daysDiff(todayStr(), c.next_follow_up) : 999; const nu = c.next_nurture_date ? daysDiff(todayStr(), c.next_nurture_date) : 999; return Math.min(fu, nu); };
+const needsAction = (c) => { if (["new", "outreach", "old"].includes(c.stage)) { return c.next_follow_up ? daysDiff(todayStr(), c.next_follow_up) <= 0 : false; } if (c.stage === "responded") { return c.next_nurture_date ? daysDiff(todayStr(), c.next_nurture_date) <= 0 : false; } return false; };
+const urgency = (c) => { if (["new", "outreach", "old"].includes(c.stage)) { return c.next_follow_up ? daysDiff(todayStr(), c.next_follow_up) : 999; } if (c.stage === "responded") { return c.next_nurture_date ? daysDiff(todayStr(), c.next_nurture_date) : 999; } return 999; };
 
 export default function CRM() {
   const [contacts, setContacts] = useState([]);
