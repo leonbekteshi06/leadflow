@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "../lib/supabase";
+
 const TEAM = ["Leon", "Kent", "Lukas"];
 const STAGES = [
   { id: "new", label: "New Lead", color: "#6C7A89" },
@@ -10,6 +11,7 @@ const STAGES = [
   { id: "closed", label: "Closed Won", color: "#10B981" },
   { id: "lost", label: "Lost", color: "#EF4444" },
 ];
+const KPI_COLORS = { DMs: "#3B82F6", Looms: "#EC4899" };
 
 const todayStr = () => new Date().toISOString().split("T")[0];
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x.toISOString().split("T")[0]; };
@@ -18,6 +20,7 @@ const fmtEU = (d) => { if(!d) return ""; const x = new Date(d); return `${String
 const weekStart = () => { const d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate()-d.getDay()+1); return d.toISOString().split("T")[0]; };
 const monthStart = () => { const d = new Date(); d.setHours(0,0,0,0); d.setDate(1); return d.toISOString().split("T")[0]; };
 const fmtMoney = (v) => new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}).format(v||0);
+const getWeekDates = () => { const ws = weekStart(); return Array.from({length:7},(_,i)=>addDays(ws,i)); };
 
 const getSendDate = (c) => {
   if(!c.next_follow_up) return { text:"-", color:"#475569", bg:"transparent" };
@@ -28,7 +31,6 @@ const getSendDate = (c) => {
   if(d===1) return { text:"Tomorrow", color:"#3B82F6", bg:"#3B82F618" };
   return { text:fmtEU(c.next_follow_up), color:"#94A3B8", bg:"#1E293B" };
 };
-
 const getNurtureDate = (c) => {
   if(!c.next_nurture_date) return null;
   const d = daysDiff(todayStr(), c.next_nurture_date);
@@ -37,23 +39,15 @@ const getNurtureDate = (c) => {
   if(d===1) return { text:"Tomorrow", color:"#8B5CF6", bg:"#8B5CF618" };
   return { text:fmtEU(c.next_nurture_date), color:"#94A3B8", bg:"#1E293B" };
 };
-
-const needsAction = (c) => {
-  const fu = c.next_follow_up ? daysDiff(todayStr(), c.next_follow_up) : 999;
-  const nu = c.next_nurture_date ? daysDiff(todayStr(), c.next_nurture_date) : 999;
-  return fu <= 0 || nu <= 0;
-};
-
-const urgency = (c) => {
-  const fu = c.next_follow_up ? daysDiff(todayStr(), c.next_follow_up) : 999;
-  const nu = c.next_nurture_date ? daysDiff(todayStr(), c.next_nurture_date) : 999;
-  return Math.min(fu, nu);
-};
+const needsAction = (c) => { const fu = c.next_follow_up ? daysDiff(todayStr(), c.next_follow_up) : 999; const nu = c.next_nurture_date ? daysDiff(todayStr(), c.next_nurture_date) : 999; return fu <= 0 || nu <= 0; };
+const urgency = (c) => { const fu = c.next_follow_up ? daysDiff(todayStr(), c.next_follow_up) : 999; const nu = c.next_nurture_date ? daysDiff(todayStr(), c.next_nurture_date) : 999; return Math.min(fu, nu); };
 
 export default function CRM() {
   const [contacts, setContacts] = useState([]);
   const [messages, setMessages] = useState([]);
   const [nurtureM, setNurtureM] = useState([]);
+  const [kpiTargets, setKpiTargets] = useState([]);
+  const [kpiEntries, setKpiEntries] = useState([]);
   const [user, setUser] = useState(() => { if (typeof window !== "undefined") return localStorage.getItem("lf-user") || "Leon"; return "Leon"; });
   const [view, setView] = useState("dashboard");
   const [modal, setModal] = useState(null);
@@ -68,179 +62,91 @@ export default function CRM() {
   const [detailId, setDetailId] = useState(null);
   const [closeId, setCloseId] = useState(null);
 
-  // Persist user selection
   useEffect(() => { if (typeof window !== "undefined") localStorage.setItem("lf-user", user); }, [user]);
 
-  // Load data from Supabase
+  // Load all data
   useEffect(() => {
     const load = async () => {
-      const [cRes, mRes] = await Promise.all([
+      const [cRes, mRes, ktRes, keRes] = await Promise.all([
         supabase.from("contacts").select("*").order("created_at", { ascending: false }),
         supabase.from("message_templates").select("*").order("step"),
+        supabase.from("kpi_targets").select("*"),
+        supabase.from("kpi_entries").select("*").gte("date", weekStart()),
       ]);
       if (cRes.data) setContacts(cRes.data);
-      if (mRes.data) {
-        setMessages(mRes.data.filter(m => m.type === "outreach"));
-        setNurtureM(mRes.data.filter(m => m.type === "nurture"));
-      }
+      if (mRes.data) { setMessages(mRes.data.filter(m => m.type === "outreach")); setNurtureM(mRes.data.filter(m => m.type === "nurture")); }
+      if (ktRes.data) setKpiTargets(ktRes.data);
+      if (keRes.data) setKpiEntries(keRes.data);
       setLoading(false);
     };
     load();
 
-    // Real-time subscriptions
-    const contactsSub = supabase.channel("contacts-changes")
-      .on("postgres_changes", { event: "*", schema: "public", table: "contacts" }, () => {
-        supabase.from("contacts").select("*").order("created_at", { ascending: false }).then(({ data }) => { if (data) setContacts(data); });
-      }).subscribe();
+    const contactsSub = supabase.channel("contacts-ch").on("postgres_changes", { event: "*", schema: "public", table: "contacts" }, () => {
+      supabase.from("contacts").select("*").order("created_at", { ascending: false }).then(({ data }) => { if (data) setContacts(data); });
+    }).subscribe();
+    const msgSub = supabase.channel("msg-ch").on("postgres_changes", { event: "*", schema: "public", table: "message_templates" }, () => {
+      supabase.from("message_templates").select("*").order("step").then(({ data }) => { if (data) { setMessages(data.filter(m => m.type === "outreach")); setNurtureM(data.filter(m => m.type === "nurture")); } });
+    }).subscribe();
+    const kpiTSub = supabase.channel("kpit-ch").on("postgres_changes", { event: "*", schema: "public", table: "kpi_targets" }, () => {
+      supabase.from("kpi_targets").select("*").then(({ data }) => { if (data) setKpiTargets(data); });
+    }).subscribe();
+    const kpiESub = supabase.channel("kpie-ch").on("postgres_changes", { event: "*", schema: "public", table: "kpi_entries" }, () => {
+      supabase.from("kpi_entries").select("*").gte("date", weekStart()).then(({ data }) => { if (data) setKpiEntries(data); });
+    }).subscribe();
 
-    const msgSub = supabase.channel("messages-changes")
-      .on("postgres_changes", { event: "*", schema: "public", table: "message_templates" }, () => {
-        supabase.from("message_templates").select("*").order("step").then(({ data }) => {
-          if (data) { setMessages(data.filter(m => m.type === "outreach")); setNurtureM(data.filter(m => m.type === "nurture")); }
-        });
-      }).subscribe();
-
-    return () => { supabase.removeChannel(contactsSub); supabase.removeChannel(msgSub); };
+    return () => { supabase.removeChannel(contactsSub); supabase.removeChannel(msgSub); supabase.removeChannel(kpiTSub); supabase.removeChannel(kpiESub); };
   }, []);
 
   const flash = (m, t = "success") => { setToast({ m, t }); setTimeout(() => setToast(null), 2500); };
 
-  // CRUD Operations
-  const addContact = async (d) => {
-    const { error } = await supabase.from("contacts").insert({
-      name: d.name, ig: d.ig || "", email: d.email || "", youtube: d.youtube || "", website: d.website || "",
-      notes: d.notes || "", stage: "new", current_step: 0, nurture_step: 0, created_at: todayStr(),
-      next_follow_up: todayStr(), pipeline_value: d.pipeline_value || 0, assigned_to: d.assigned_to || user,
-      history: [], nurture_history: [],
-    });
-    if (!error) flash(`${d.name} added`);
-    else flash("Error adding lead", "error");
-  };
+  // Contact CRUD
+  const addContact = async (d) => { const { error } = await supabase.from("contacts").insert({ name: d.name, ig: d.ig || "", email: d.email || "", youtube: d.youtube || "", website: d.website || "", notes: d.notes || "", stage: "new", current_step: 0, nurture_step: 0, created_at: todayStr(), next_follow_up: todayStr(), pipeline_value: d.pipeline_value || 0, assigned_to: d.assigned_to || user, history: [], nurture_history: [] }); if (!error) flash(`${d.name} added`); else flash("Error adding lead", "error"); };
+  const updateContact = async (id, data) => { await supabase.from("contacts").update({ ...data, updated_at: new Date().toISOString() }).eq("id", id); };
+  const deleteContact = async (id) => { const name = contacts.find(c => c.id === id)?.name; await supabase.from("contacts").delete().eq("id", id); setDelId(null); if (detailId === id) setDetailId(null); flash(`${name} removed`, "info"); };
 
-  const updateContact = async (id, data) => {
-    await supabase.from("contacts").update({ ...data, updated_at: new Date().toISOString() }).eq("id", id);
-  };
+  const markSent = async (id) => { const c = contacts.find(x => x.id === id); if (!c) return; const ns = c.current_step + 1; const nm = messages.find(m => m.step === ns + 1); const cm = messages.find(m => m.step === ns); await updateContact(id, { current_step: ns, stage: ns > 0 && c.stage === "new" ? "outreach" : c.stage, last_contacted_at: todayStr(), next_follow_up: nm ? addDays(todayStr(), nm.delay_days) : null, history: [...(c.history || []), { step: ns, name: cm?.name || `Msg ${ns}`, at: todayStr() }] }); flash("Marked sent!"); };
+  const markNurtureSent = async (id) => { const c = contacts.find(x => x.id === id); if (!c) return; const ns = (c.nurture_step || 0) + 1; const nm = nurtureM.find(m => m.step === ns + 1); const cm = nurtureM.find(m => m.step === ns); await updateContact(id, { nurture_step: ns, last_contacted_at: todayStr(), next_nurture_date: nm ? addDays(todayStr(), nm.delay_days) : addDays(todayStr(), 7), nurture_history: [...(c.nurture_history || []), { step: ns, name: cm?.name || `N ${ns}`, at: todayStr() }] }); flash("Nurture sent!"); };
+  const moveStage = async (id, stage) => { const u = { stage }; if (stage === "responded") { u.next_nurture_date = todayStr(); u.nurture_step = 0; u.next_follow_up = null; } if (["booked", "closed", "lost"].includes(stage)) { u.next_follow_up = null; u.next_nurture_date = null; } await updateContact(id, u); flash(`Moved to ${STAGES.find(s => s.id === stage)?.label}`); };
+  const closeDeal = async (id, v) => { await updateContact(id, { stage: "closed", closed_value: v, closed_at: todayStr(), next_follow_up: null, next_nurture_date: null }); flash(`Closed for ${fmtMoney(v)}!`); setCloseId(null); };
 
-  const deleteContact = async (id) => {
-    const name = contacts.find(c => c.id === id)?.name;
-    await supabase.from("contacts").delete().eq("id", id);
-    setDelId(null);
-    if (detailId === id) setDetailId(null);
-    flash(`${name} removed`, "info");
-  };
+  // Message CRUD
+  const addMsg = async (d, type) => { const list = type === "outreach" ? messages : nurtureM; await supabase.from("message_templates").insert({ ...d, step: list.length + 1, type }); flash("Added!"); };
+  const updateMsg = async (id, d) => { await supabase.from("message_templates").update(d).eq("id", id); flash("Updated!"); };
+  const deleteMsg = async (id, type) => { await supabase.from("message_templates").delete().eq("id", id); const list = (type === "outreach" ? messages : nurtureM).filter(m => m.id !== id); for (let i = 0; i < list.length; i++) { await supabase.from("message_templates").update({ step: i + 1 }).eq("id", list[i].id); } flash("Removed", "info"); };
 
-  const markSent = async (id) => {
-    const c = contacts.find(x => x.id === id);
-    if (!c) return;
-    const ns = c.current_step + 1;
-    const nm = messages.find(m => m.step === ns + 1);
-    const cm = messages.find(m => m.step === ns);
-    await updateContact(id, {
-      current_step: ns,
-      stage: ns > 0 && c.stage === "new" ? "outreach" : c.stage,
-      last_contacted_at: todayStr(),
-      next_follow_up: nm ? addDays(todayStr(), nm.delay_days) : null,
-      history: [...(c.history || []), { step: ns, name: cm?.name || `Msg ${ns}`, at: todayStr() }],
-    });
-    flash("Marked sent!");
-  };
+  // KPI functions
+  const getKpiEntry = (person, category, date) => kpiEntries.find(e => e.person === person && e.category === category && e.date === date);
+  const getKpiTarget = (person, category) => kpiTargets.find(t => t.person === person && t.category === category);
+  const getWeeklyCount = (person, category) => { const ws = weekStart(); return kpiEntries.filter(e => e.person === person && e.category === category && e.date >= ws).reduce((s, e) => s + (e.count || 0), 0); };
 
-  const markNurtureSent = async (id) => {
-    const c = contacts.find(x => x.id === id);
-    if (!c) return;
-    const ns = (c.nurture_step || 0) + 1;
-    const nm = nurtureM.find(m => m.step === ns + 1);
-    const cm = nurtureM.find(m => m.step === ns);
-    await updateContact(id, {
-      nurture_step: ns,
-      last_contacted_at: todayStr(),
-      next_nurture_date: nm ? addDays(todayStr(), nm.delay_days) : addDays(todayStr(), 7),
-      nurture_history: [...(c.nurture_history || []), { step: ns, name: cm?.name || `N ${ns}`, at: todayStr() }],
-    });
-    flash("Nurture sent!");
-  };
-
-  const moveStage = async (id, stage) => {
-    const u = { stage };
-    if (stage === "responded") { u.next_nurture_date = todayStr(); u.nurture_step = 0; u.next_follow_up = null; }
-    if (["booked", "closed", "lost"].includes(stage)) { u.next_follow_up = null; u.next_nurture_date = null; }
-    await updateContact(id, u);
-    flash(`Moved to ${STAGES.find(s => s.id === stage)?.label}`);
-  };
-
-  const closeDeal = async (id, v) => {
-    await updateContact(id, { stage: "closed", closed_value: v, closed_at: todayStr(), next_follow_up: null, next_nurture_date: null });
-    flash(`Closed for ${fmtMoney(v)}!`);
-    setCloseId(null);
-  };
-
-  // Message template CRUD
-  const addMsg = async (d, type) => {
-    const list = type === "outreach" ? messages : nurtureM;
-    await supabase.from("message_templates").insert({ ...d, step: list.length + 1, type });
-    flash("Added!");
-  };
-
-  const updateMsg = async (id, d) => {
-    await supabase.from("message_templates").update(d).eq("id", id);
-    flash("Updated!");
-  };
-
-  const deleteMsg = async (id, type) => {
-    await supabase.from("message_templates").delete().eq("id", id);
-    // Re-number steps
-    const list = (type === "outreach" ? messages : nurtureM).filter(m => m.id !== id);
-    for (let i = 0; i < list.length; i++) {
-      await supabase.from("message_templates").update({ step: i + 1 }).eq("id", list[i].id);
+  const logKpi = async (person, category, delta) => {
+    const date = todayStr();
+    const existing = getKpiEntry(person, category, date);
+    if (existing) {
+      const newCount = Math.max(0, (existing.count || 0) + delta);
+      await supabase.from("kpi_entries").update({ count: newCount, updated_at: new Date().toISOString() }).eq("id", existing.id);
+    } else if (delta > 0) {
+      await supabase.from("kpi_entries").insert({ person, category, count: delta, date });
     }
-    flash("Removed", "info");
+  };
+
+  const updateKpiTarget = async (id, data) => {
+    await supabase.from("kpi_targets").update({ ...data, updated_at: new Date().toISOString() }).eq("id", id);
+    flash("Target updated!");
   };
 
   const getNext = (c) => { const m = messages.find(x => x.step === c.current_step + 1); return m ? { ...m, body: m.body.replace(/\{\{name\}\}/g, c.name.split(" ")[0]) } : null; };
-  const getNextN = (c) => {
-    let m = nurtureM.find(x => x.step === (c.nurture_step || 0) + 1);
-    if (!m && nurtureM.length > 0) { const weekly = nurtureM.filter(x => x.step >= 7); if (weekly.length > 0) m = weekly[((c.nurture_step || 0) - 6) % weekly.length] || weekly[0]; else m = nurtureM[nurtureM.length - 1]; }
-    return m ? { ...m, body: m.body.replace(/\{\{name\}\}/g, c.name.split(" ")[0]) } : null;
-  };
+  const getNextN = (c) => { let m = nurtureM.find(x => x.step === (c.nurture_step || 0) + 1); if (!m && nurtureM.length > 0) { const weekly = nurtureM.filter(x => x.step >= 7); if (weekly.length > 0) m = weekly[((c.nurture_step || 0) - 6) % weekly.length] || weekly[0]; else m = nurtureM[nurtureM.length - 1]; } return m ? { ...m, body: m.body.replace(/\{\{name\}\}/g, c.name.split(" ")[0]) } : null; };
 
-  const copy = async (c, type) => {
-    const msg = type === "nurture" ? getNextN(c) : getNext(c);
-    if (!msg) return;
-    try { await navigator.clipboard.writeText(msg.body); setCopied(c.id + type); setTimeout(() => setCopied(null), 2e3); flash("Copied!"); } catch { flash("Couldn't copy", "error"); }
-  };
+  const copy = async (c, type) => { const msg = type === "nurture" ? getNextN(c) : getNext(c); if (!msg) return; try { await navigator.clipboard.writeText(msg.body); setCopied(c.id + type); setTimeout(() => setCopied(null), 2e3); flash("Copied!"); } catch { flash("Couldn't copy", "error"); } };
 
-  const importCSV = async (text) => {
-    const lines = text.trim().split("\n"); if (lines.length < 2) return flash("No data", "error");
-    const hdr = lines[0].split(",").map(h => h.trim().toLowerCase().replace(/['"]/g, ""));
-    const mp = {};
-    hdr.forEach((h, i) => { if (h.includes("name")) mp.name = i; else if (h.includes("ig") || h.includes("instagram")) mp.ig = i; else if (h.includes("email")) mp.email = i; else if (h.includes("youtube") || h.includes("yt")) mp.youtube = i; else if (h.includes("website") || h.includes("url") || h.includes("site")) mp.website = i; else if (h.includes("note")) mp.notes = i; else if (h.includes("value") || h.includes("deal")) mp.pv = i; else if (h.includes("assign") || h.includes("owner")) mp.assign = i; });
-    if (mp.name === undefined) return flash("Need a 'Name' column", "error");
-    const rows = [];
-    for (let i = 1; i < lines.length; i++) {
-      const v = lines[i].match(/(".*?"|[^",]+)(?=\s*,|\s*$)/g)?.map(x => x.replace(/^"|"$/g, "").trim()) || lines[i].split(",").map(x => x.trim());
-      const nm = v[mp.name]; if (!nm) continue;
-      rows.push({ name: nm, ig: v[mp.ig] || "", email: v[mp.email] || "", youtube: v[mp.youtube] || "", website: v[mp.website] || "", notes: v[mp.notes] || "", stage: "new", current_step: 0, nurture_step: 0, created_at: todayStr(), next_follow_up: todayStr(), pipeline_value: parseFloat(v[mp.pv]) || 0, assigned_to: v[mp.assign] || user, history: [], nurture_history: [] });
-    }
-    if (rows.length > 0) {
-      const { error } = await supabase.from("contacts").insert(rows);
-      if (!error) flash(`Imported ${rows.length} leads!`);
-      else flash("Import error", "error");
-    }
-    setModal(null);
-  };
+  const importCSV = async (text) => { const lines = text.trim().split("\n"); if (lines.length < 2) return flash("No data", "error"); const hdr = lines[0].split(",").map(h => h.trim().toLowerCase().replace(/['"]/g, "")); const mp = {}; hdr.forEach((h, i) => { if (h.includes("name")) mp.name = i; else if (h.includes("ig") || h.includes("instagram")) mp.ig = i; else if (h.includes("email")) mp.email = i; else if (h.includes("youtube") || h.includes("yt")) mp.youtube = i; else if (h.includes("website") || h.includes("url") || h.includes("site")) mp.website = i; else if (h.includes("note")) mp.notes = i; else if (h.includes("value") || h.includes("deal")) mp.pv = i; else if (h.includes("assign") || h.includes("owner")) mp.assign = i; }); if (mp.name === undefined) return flash("Need a 'Name' column", "error"); const rows = []; for (let i = 1; i < lines.length; i++) { const v = lines[i].match(/(".*?"|[^",]+)(?=\s*,|\s*$)/g)?.map(x => x.replace(/^"|"$/g, "").trim()) || lines[i].split(",").map(x => x.trim()); const nm = v[mp.name]; if (!nm) continue; rows.push({ name: nm, ig: v[mp.ig] || "", email: v[mp.email] || "", youtube: v[mp.youtube] || "", website: v[mp.website] || "", notes: v[mp.notes] || "", stage: "new", current_step: 0, nurture_step: 0, created_at: todayStr(), next_follow_up: todayStr(), pipeline_value: parseFloat(v[mp.pv]) || 0, assigned_to: v[mp.assign] || user, history: [], nurture_history: [] }); } if (rows.length > 0) { const { error } = await supabase.from("contacts").insert(rows); if (!error) flash(`Imported ${rows.length} leads!`); else flash("Import error", "error"); } setModal(null); };
 
-  // Filtering & sorting
+  // Filtered contacts
   const filtered = contacts.filter(c => filter === "all" || c.stage === filter).filter(c => { if (!search) return true; const s = search.toLowerCase(); return c.name.toLowerCase().includes(s) || c.ig?.toLowerCase().includes(s) || c.email?.toLowerCase().includes(s) || c.notes?.toLowerCase().includes(s); }).sort((a, b) => { let av, bv; if (sortBy === "next_follow_up") { av = a.next_follow_up || "9999"; bv = b.next_follow_up || "9999"; } else if (sortBy === "name") { av = a.name.toLowerCase(); bv = b.name.toLowerCase(); } else if (sortBy === "stage") { av = STAGES.findIndex(s => s.id === a.stage); bv = STAGES.findIndex(s => s.id === b.stage); } else { av = a.created_at; bv = b.created_at; } return sortDir === "asc" ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1); });
 
   const wk = weekStart(), mo = monthStart();
-  const stats = {
-    contactedWeek: contacts.filter(c => c.last_contacted_at && c.last_contacted_at >= wk).length,
-    contactedMonth: contacts.filter(c => c.last_contacted_at && c.last_contacted_at >= mo).length,
-    pipeline: contacts.filter(c => !["closed", "lost"].includes(c.stage)).reduce((s, c) => s + (c.pipeline_value || 0), 0),
-    closedTotal: contacts.filter(c => c.stage === "closed").reduce((s, c) => s + (c.closed_value || 0), 0),
-    closedMonth: contacts.filter(c => c.stage === "closed" && c.closed_at && c.closed_at >= mo).reduce((s, c) => s + (c.closed_value || 0), 0),
-    convRate: contacts.length ? Math.round((contacts.filter(c => c.stage === "closed").length / contacts.length) * 100) : 0,
-  };
+  const stats = { contactedWeek: contacts.filter(c => c.last_contacted_at && c.last_contacted_at >= wk).length, contactedMonth: contacts.filter(c => c.last_contacted_at && c.last_contacted_at >= mo).length, pipeline: contacts.filter(c => !["closed", "lost"].includes(c.stage)).reduce((s, c) => s + (c.pipeline_value || 0), 0), closedTotal: contacts.filter(c => c.stage === "closed").reduce((s, c) => s + (c.closed_value || 0), 0), closedMonth: contacts.filter(c => c.stage === "closed" && c.closed_at && c.closed_at >= mo).reduce((s, c) => s + (c.closed_value || 0), 0), convRate: contacts.length ? Math.round((contacts.filter(c => c.stage === "closed").length / contacts.length) * 100) : 0 };
   const actionsDue = contacts.filter(needsAction);
   const myActionsDue = actionsDue.filter(c => c.assigned_to === user);
 
@@ -248,12 +154,14 @@ export default function CRM() {
 
   const NAV = [
     { id: "dashboard", label: "Dashboard", d: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1" },
+    { id: "kpis", label: "KPIs", d: "M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" },
     { id: "myleads", label: "My Leads", d: "M5.121 17.804A13.937 13.937 0 0112 16c2.5 0 4.847.655 6.879 1.804M15 10a3 3 0 11-6 0 3 3 0 016 0zm6 2a9 9 0 11-18 0 9 9 0 0118 0z", badge: myActionsDue.length || null },
     { id: "contacts", label: "All Leads", d: "M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" },
     { id: "messages", label: "Outreach", d: "M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" },
     { id: "nurture", label: "Nurture", d: "M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" },
   ];
 
+  // ===== SHARED COMPONENTS =====
   const Row = ({ c, showWho }) => {
     const sd = getSendDate(c); const nd = getNurtureDate(c); const nm = getNext(c); const nn = getNextN(c); const stg = STAGES.find(s => s.id === c.stage);
     const isO = ["new", "outreach"].includes(c.stage); const isN = c.stage === "responded" && c.next_nurture_date;
@@ -261,98 +169,160 @@ export default function CRM() {
       <tr style={S.tr} onClick={() => setDetailId(detailId === c.id ? null : c.id)}>
         <td style={S.td}><div style={{ fontWeight: 500, color: "#F1F5F9", fontSize: 13 }}>{c.name}</div>{showWho && <div style={{ fontSize: 10, color: "#64748B" }}>{c.assigned_to}</div>}{c.notes && <div style={{ fontSize: 10, color: "#475569", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.notes}</div>}</td>
         <td style={S.td}><select value={c.stage} onChange={e => { e.stopPropagation(); if (e.target.value === "closed") setCloseId(c.id); else moveStage(c.id, e.target.value); }} onClick={e => e.stopPropagation()} style={{ ...S.sel, color: stg.color, borderColor: stg.color + "40" }}>{STAGES.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}</select></td>
-        <td style={S.td} onClick={e => e.stopPropagation()}>
-          {isO && nm ? (<button style={S.copyBtn} onClick={() => copy(c, "outreach")}><span style={{ fontSize: 11, color: "#CBD5E1", fontWeight: 500 }}>{nm.name}</span><span style={{ fontSize: 10, color: "#475569" }}>{copied === c.id + "outreach" ? "✓ Copied!" : nm.channel === "ig" ? "📱 Copy DM" : "📧 Copy Email"}</span></button>)
-            : isN && nn ? (<button style={{ ...S.copyBtn, borderColor: "#8B5CF630" }} onClick={() => copy(c, "nurture")}><span style={{ fontSize: 11, color: "#C4B5FD", fontWeight: 500 }}>{nn.name}</span><span style={{ fontSize: 10, color: "#475569" }}>{copied === c.id + "nurture" ? "✓ Copied!" : "🔁 Copy Nurture"}</span></button>)
-              : (<span style={{ fontSize: 11, color: "#475569" }}>{["closed", "booked"].includes(c.stage) ? "-" : "Done"}</span>)}
-        </td>
-        <td style={S.td}>
-          {isO && c.next_follow_up ? <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 6, background: sd.bg, color: sd.color }}>{sd.text}</span>
-            : isN && nd ? <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 6, background: nd.bg, color: nd.color }}>{nd.text}</span>
-              : <span style={{ color: "#475569", fontSize: 11 }}>-</span>}
-        </td>
+        <td style={S.td} onClick={e => e.stopPropagation()}>{isO && nm ? (<button style={S.copyBtn} onClick={() => copy(c, "outreach")}><span style={{ fontSize: 11, color: "#CBD5E1", fontWeight: 500 }}>{nm.name}</span><span style={{ fontSize: 10, color: "#475569" }}>{copied === c.id + "outreach" ? "✓ Copied!" : nm.channel === "ig" ? "📱 Copy DM" : "📧 Copy Email"}</span></button>) : isN && nn ? (<button style={{ ...S.copyBtn, borderColor: "#8B5CF630" }} onClick={() => copy(c, "nurture")}><span style={{ fontSize: 11, color: "#C4B5FD", fontWeight: 500 }}>{nn.name}</span><span style={{ fontSize: 10, color: "#475569" }}>{copied === c.id + "nurture" ? "✓ Copied!" : "🔁 Copy Nurture"}</span></button>) : (<span style={{ fontSize: 11, color: "#475569" }}>{["closed", "booked"].includes(c.stage) ? "-" : "Done"}</span>)}</td>
+        <td style={S.td}>{isO && c.next_follow_up ? <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 6, background: sd.bg, color: sd.color }}>{sd.text}</span> : isN && nd ? <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 6, background: nd.bg, color: nd.color }}>{nd.text}</span> : <span style={{ color: "#475569", fontSize: 11 }}>-</span>}</td>
         <td style={S.td}>{c.pipeline_value ? <span style={{ fontSize: 12, color: "#10B981", fontWeight: 600 }}>{fmtMoney(c.pipeline_value)}</span> : c.closed_value ? <span style={{ fontSize: 12, color: "#10B981", fontWeight: 600 }}>{fmtMoney(c.closed_value)}</span> : <span style={{ fontSize: 11, color: "#334155" }}>-</span>}</td>
-        <td style={S.td} onClick={e => e.stopPropagation()}>
-          <div style={{ display: "flex", gap: 3 }}>
-            {c.ig && <a href={c.ig.startsWith("http") ? c.ig : `https://instagram.com/${c.ig.replace("@", "")}`} target="_blank" rel="noopener noreferrer" style={S.link}>IG</a>}
-            {c.email && <a href={`mailto:${c.email}`} style={S.link}>@</a>}
-            {c.youtube && <a href={c.youtube.startsWith("http") ? c.youtube : `https://youtube.com/${c.youtube}`} target="_blank" rel="noopener noreferrer" style={S.link}>YT</a>}
-            {c.website && <a href={c.website.startsWith("http") ? c.website : `https://${c.website}`} target="_blank" rel="noopener noreferrer" style={S.link}>🌐</a>}
-          </div>
-        </td>
-        <td style={S.td} onClick={e => e.stopPropagation()}>
-          <div style={{ display: "flex", gap: 3 }}>
-            {isO && nm && <button style={{ ...S.act, color: "#10B981" }} onClick={() => markSent(c.id)} title="Mark sent">✓</button>}
-            {isN && <button style={{ ...S.act, color: "#8B5CF6" }} onClick={() => markNurtureSent(c.id)} title="Nurture sent">✓</button>}
-            <button style={{ ...S.act, color: "#94A3B8" }} onClick={() => setModal({ type: "contact", data: c })} title="Edit">✎</button>
-            <button style={{ ...S.act, color: "#EF4444" }} onClick={() => setDelId(c.id)} title="Delete">✕</button>
-          </div>
-        </td>
+        <td style={S.td} onClick={e => e.stopPropagation()}><div style={{ display: "flex", gap: 3 }}>{c.ig && <a href={c.ig.startsWith("http") ? c.ig : `https://instagram.com/${c.ig.replace("@", "")}`} target="_blank" rel="noopener noreferrer" style={S.link}>IG</a>}{c.email && <a href={`mailto:${c.email}`} style={S.link}>@</a>}{c.youtube && <a href={c.youtube.startsWith("http") ? c.youtube : `https://youtube.com/${c.youtube}`} target="_blank" rel="noopener noreferrer" style={S.link}>YT</a>}{c.website && <a href={c.website.startsWith("http") ? c.website : `https://${c.website}`} target="_blank" rel="noopener noreferrer" style={S.link}>🌐</a>}</div></td>
+        <td style={S.td} onClick={e => e.stopPropagation()}><div style={{ display: "flex", gap: 3 }}>{isO && nm && <button style={{ ...S.act, color: "#10B981" }} onClick={() => markSent(c.id)} title="Mark sent">✓</button>}{isN && <button style={{ ...S.act, color: "#8B5CF6" }} onClick={() => markNurtureSent(c.id)} title="Nurture sent">✓</button>}<button style={{ ...S.act, color: "#94A3B8" }} onClick={() => setModal({ type: "contact", data: c })} title="Edit">✎</button><button style={{ ...S.act, color: "#EF4444" }} onClick={() => setDelId(c.id)} title="Delete">✕</button></div></td>
       </tr>
     );
   };
 
-  const Table = ({ data, showWho = false }) => (
-    <div style={S.tw}><table style={S.tbl}><thead><tr>
-      {[{ k: "name", l: "Name" }, { k: "stage", l: "Stage" }, { k: null, l: "Next Message" }, { k: "next_follow_up", l: "Send Date" }, { k: null, l: "Value" }, { k: null, l: "Links" }, { k: null, l: "Actions" }].map((c, i) => (
-        <th key={i} style={{ ...S.th, cursor: c.k ? "pointer" : "default" }} onClick={() => { if (!c.k) return; if (sortBy === c.k) setSortDir(d => d === "asc" ? "desc" : "asc"); else { setSortBy(c.k); setSortDir("asc"); } }}>{c.l}{sortBy === c.k && <span style={{ marginLeft: 3, fontSize: 9 }}>{sortDir === "asc" ? "▲" : "▼"}</span>}</th>
-      ))}
-    </tr></thead><tbody>{data.map(c => <Row key={c.id} c={c} showWho={showWho} />)}</tbody></table></div>
-  );
+  const Table = ({ data, showWho = false }) => (<div style={S.tw}><table style={S.tbl}><thead><tr>{[{ k: "name", l: "Name" }, { k: "stage", l: "Stage" }, { k: null, l: "Next Message" }, { k: "next_follow_up", l: "Send Date" }, { k: null, l: "Value" }, { k: null, l: "Links" }, { k: null, l: "Actions" }].map((c, i) => (<th key={i} style={{ ...S.th, cursor: c.k ? "pointer" : "default" }} onClick={() => { if (!c.k) return; if (sortBy === c.k) setSortDir(d => d === "asc" ? "desc" : "asc"); else { setSortBy(c.k); setSortDir("asc"); } }}>{c.l}{sortBy === c.k && <span style={{ marginLeft: 3, fontSize: 9 }}>{sortDir === "asc" ? "▲" : "▼"}</span>}</th>))}</tr></thead><tbody>{data.map(c => <Row key={c.id} c={c} showWho={showWho} />)}</tbody></table></div>);
 
   const Detail = () => {
     const c = contacts.find(x => x.id === detailId); if (!c) return null;
     const nm = getNext(c); const nn = getNextN(c);
-    return (
-      <div style={S.detail}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-          <div><h3 style={{ color: "#F1F5F9", fontSize: 17, fontWeight: 600, margin: 0 }}>{c.name}</h3><div style={{ color: "#64748B", fontSize: 11, marginTop: 3 }}>Added {fmtEU(c.created_at)} · Assigned to <strong style={{ color: "#CBD5E1" }}>{c.assigned_to}</strong></div></div>
-          <button style={S.x} onClick={() => setDetailId(null)}>✕</button>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 12 }}>
-          {c.ig && <div style={S.df}><span style={S.dl}>Instagram</span><span style={S.dv}>{c.ig}</span></div>}
-          {c.email && <div style={S.df}><span style={S.dl}>Email</span><span style={S.dv}>{c.email}</span></div>}
-          {c.youtube && <div style={S.df}><span style={S.dl}>YouTube</span><span style={S.dv}>{c.youtube}</span></div>}
-          {c.website && <div style={S.df}><span style={S.dl}>Website</span><span style={S.dv}>{c.website}</span></div>}
-          {c.pipeline_value > 0 && <div style={S.df}><span style={S.dl}>Pipeline Value</span><span style={{ ...S.dv, color: "#10B981" }}>{fmtMoney(c.pipeline_value)}</span></div>}
-          {c.closed_value > 0 && <div style={S.df}><span style={S.dl}>Closed For</span><span style={{ ...S.dv, color: "#10B981" }}>{fmtMoney(c.closed_value)}</span></div>}
-        </div>
-        {c.notes && <div style={{ ...S.df, marginTop: 8 }}><span style={S.dl}>Notes</span><span style={{ ...S.dv, whiteSpace: "pre-wrap" }}>{c.notes}</span></div>}
-        {nm && ["new", "outreach"].includes(c.stage) && (<div style={{ marginTop: 12, padding: 10, background: "#0B1120", borderRadius: 8, border: "1px solid #1E293B" }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}><span style={{ color: "#94A3B8", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em" }}>NEXT: {nm.name}</span><button style={S.sc} onClick={() => copy(c, "outreach")}>{copied === c.id + "outreach" ? "Copied!" : "Copy"}</button></div><div style={{ color: "#CBD5E1", fontSize: 12, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{nm.body}</div></div>)}
-        {nn && c.stage === "responded" && (<div style={{ marginTop: 12, padding: 10, background: "#0B1120", borderRadius: 8, border: "1px solid #8B5CF620" }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}><span style={{ color: "#C4B5FD", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em" }}>NURTURE: {nn.name}</span><button style={{ ...S.sc, borderColor: "#8B5CF640", color: "#C4B5FD" }} onClick={() => copy(c, "nurture")}>{copied === c.id + "nurture" ? "Copied!" : "Copy"}</button></div><div style={{ color: "#CBD5E1", fontSize: 12, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{nn.body}</div></div>)}
-        {((c.history || []).length > 0 || (c.nurture_history || []).length > 0) && (<div style={{ marginTop: 12 }}><span style={{ color: "#64748B", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em" }}>Activity</span><div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 3 }}>{[...(c.history || []).map(h => ({ ...h, t: "out" })), ...(c.nurture_history || []).map(h => ({ ...h, t: "nur" }))].sort((a, b) => b.at > a.at ? 1 : -1).map((h, i) => (<div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid #1E293B" }}><span style={{ color: h.t === "nur" ? "#C4B5FD" : "#CBD5E1", fontSize: 11 }}>{h.t === "nur" ? "🔁 " : "📤 "}{h.name}</span><span style={{ color: "#64748B", fontSize: 10 }}>{fmtEU(h.at)}</span></div>))}</div></div>)}
-      </div>
-    );
+    return (<div style={S.detail}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}><div><h3 style={{ color: "#F1F5F9", fontSize: 17, fontWeight: 600, margin: 0 }}>{c.name}</h3><div style={{ color: "#64748B", fontSize: 11, marginTop: 3 }}>Added {fmtEU(c.created_at)} · Assigned to <strong style={{ color: "#CBD5E1" }}>{c.assigned_to}</strong></div></div><button style={S.x} onClick={() => setDetailId(null)}>✕</button></div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 12 }}>{c.ig && <div style={S.df}><span style={S.dl}>Instagram</span><span style={S.dv}>{c.ig}</span></div>}{c.email && <div style={S.df}><span style={S.dl}>Email</span><span style={S.dv}>{c.email}</span></div>}{c.youtube && <div style={S.df}><span style={S.dl}>YouTube</span><span style={S.dv}>{c.youtube}</span></div>}{c.website && <div style={S.df}><span style={S.dl}>Website</span><span style={S.dv}>{c.website}</span></div>}{c.pipeline_value > 0 && <div style={S.df}><span style={S.dl}>Pipeline Value</span><span style={{ ...S.dv, color: "#10B981" }}>{fmtMoney(c.pipeline_value)}</span></div>}{c.closed_value > 0 && <div style={S.df}><span style={S.dl}>Closed For</span><span style={{ ...S.dv, color: "#10B981" }}>{fmtMoney(c.closed_value)}</span></div>}</div>
+      {c.notes && <div style={{ ...S.df, marginTop: 8 }}><span style={S.dl}>Notes</span><span style={{ ...S.dv, whiteSpace: "pre-wrap" }}>{c.notes}</span></div>}
+      {nm && ["new", "outreach"].includes(c.stage) && (<div style={{ marginTop: 12, padding: 10, background: "#0B1120", borderRadius: 8, border: "1px solid #1E293B" }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}><span style={{ color: "#94A3B8", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em" }}>NEXT: {nm.name}</span><button style={S.sc} onClick={() => copy(c, "outreach")}>{copied === c.id + "outreach" ? "Copied!" : "Copy"}</button></div><div style={{ color: "#CBD5E1", fontSize: 12, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{nm.body}</div></div>)}
+      {nn && c.stage === "responded" && (<div style={{ marginTop: 12, padding: 10, background: "#0B1120", borderRadius: 8, border: "1px solid #8B5CF620" }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}><span style={{ color: "#C4B5FD", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em" }}>NURTURE: {nn.name}</span><button style={{ ...S.sc, borderColor: "#8B5CF640", color: "#C4B5FD" }} onClick={() => copy(c, "nurture")}>{copied === c.id + "nurture" ? "Copied!" : "Copy"}</button></div><div style={{ color: "#CBD5E1", fontSize: 12, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{nn.body}</div></div>)}
+      {((c.history || []).length > 0 || (c.nurture_history || []).length > 0) && (<div style={{ marginTop: 12 }}><span style={{ color: "#64748B", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em" }}>Activity</span><div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 3 }}>{[...(c.history || []).map(h => ({ ...h, t: "out" })), ...(c.nurture_history || []).map(h => ({ ...h, t: "nur" }))].sort((a, b) => b.at > a.at ? 1 : -1).map((h, i) => (<div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid #1E293B" }}><span style={{ color: h.t === "nur" ? "#C4B5FD" : "#CBD5E1", fontSize: 11 }}>{h.t === "nur" ? "🔁 " : "📤 "}{h.name}</span><span style={{ color: "#64748B", fontSize: 10 }}>{fmtEU(h.at)}</span></div>))}</div></div>)}
+    </div>);
   };
 
   const MsgView = ({ type }) => {
     const list = type === "outreach" ? messages : nurtureM;
+    return (<div style={S.content}>
+      <div style={S.header}><div><h1 style={S.h1}>{type === "outreach" ? "Outreach Sequence" : "Nurture Sequence"}</h1><p style={S.sub}>{type === "outreach" ? "Your cold outreach messages. Edit to match your offer." : "Follow-up messages for responded leads."}</p></div><button style={S.pri} onClick={() => setModal({ type: "msg", data: null, msgType: type })}>+ Add</button></div>
+      <div style={{ display: "flex", flexDirection: "column" }}>{list.sort((a, b) => a.step - b.step).map((m, i) => (<div key={m.id}><div style={{ background: "#0F172A", borderRadius: 10, border: `1px solid ${type === "nurture" ? "#8B5CF620" : "#1E293B"}`, overflow: "hidden" }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", borderBottom: "1px solid #1E293B" }}><div style={{ display: "flex", alignItems: "center", gap: 8 }}><div style={{ width: 24, height: 24, borderRadius: "50%", background: type === "nurture" ? "linear-gradient(135deg,#8B5CF6,#EC4899)" : "linear-gradient(135deg,#3B82F6,#6366F1)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700 }}>{m.step}</div><div><div style={{ color: "#F1F5F9", fontWeight: 600, fontSize: 13 }}>{m.name}</div><div style={{ color: "#64748B", fontSize: 10 }}>{m.channel === "ig" ? "📱 IG DM" : "📧 Email"} · {m.delay_days === 0 ? "Immediately" : `${m.delay_days}d delay`}</div></div></div><div style={{ display: "flex", gap: 3 }}><button style={{ ...S.act, color: "#94A3B8" }} onClick={() => setModal({ type: "msg", data: m, msgType: type })}>✎</button>{list.length > 1 && <button style={{ ...S.act, color: "#EF4444" }} onClick={() => deleteMsg(m.id, type)}>✕</button>}</div></div><div style={{ padding: "10px 12px", fontSize: 12, lineHeight: 1.6, color: "#94A3B8", whiteSpace: "pre-wrap" }}>{m.body}</div></div>{i < list.length - 1 && <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 16px" }}><div style={{ flex: 1, height: 1, background: "#1E293B" }} /><span style={{ color: "#475569", fontSize: 9, fontWeight: 500 }}>{list[i + 1]?.delay_days === 0 ? "Immediately" : `Wait ${list[i + 1]?.delay_days}d`}</span><div style={{ flex: 1, height: 1, background: "#1E293B" }} /></div>}</div>))}</div>
+    </div>);
+  };
+
+  // ===== KPI COMPONENTS =====
+  const ProgressBar = ({ value, max, color, height = 8 }) => {
+    const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
+    return (<div style={{ width: "100%", height, background: "#1E293B", borderRadius: height / 2, overflow: "hidden" }}>
+      <div style={{ width: `${pct}%`, height: "100%", background: pct >= 100 ? "#10B981" : color, borderRadius: height / 2, transition: "width 0.3s ease" }} />
+    </div>);
+  };
+
+  const KpiCard = ({ person, category, color }) => {
+    const target = getKpiTarget(person, category);
+    if (!target || !target.active) return null;
+    const todayEntry = getKpiEntry(person, category, todayStr());
+    const todayCount = todayEntry?.count || 0;
+    const weeklyCount = getWeeklyCount(person, category);
+    const isMe = person === user;
     return (
-      <div style={S.content}>
-        <div style={S.header}><div><h1 style={S.h1}>{type === "outreach" ? "Outreach Sequence" : "Nurture Sequence"}</h1><p style={S.sub}>{type === "outreach" ? "Your cold outreach messages. Edit to match your offer." : "Follow-up messages for responded leads."}</p></div>
-          <button style={S.pri} onClick={() => setModal({ type: "msg", data: null, msgType: type })}>+ Add</button></div>
-        <div style={{ display: "flex", flexDirection: "column" }}>
-          {list.sort((a, b) => a.step - b.step).map((m, i) => (<div key={m.id}>
-            <div style={{ background: "#0F172A", borderRadius: 10, border: `1px solid ${type === "nurture" ? "#8B5CF620" : "#1E293B"}`, overflow: "hidden" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", borderBottom: "1px solid #1E293B" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <div style={{ width: 24, height: 24, borderRadius: "50%", background: type === "nurture" ? "linear-gradient(135deg,#8B5CF6,#EC4899)" : "linear-gradient(135deg,#3B82F6,#6366F1)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700 }}>{m.step}</div>
-                  <div><div style={{ color: "#F1F5F9", fontWeight: 600, fontSize: 13 }}>{m.name}</div><div style={{ color: "#64748B", fontSize: 10 }}>{m.channel === "ig" ? "📱 IG DM" : "📧 Email"} · {m.delay_days === 0 ? "Immediately" : `${m.delay_days}d delay`}</div></div>
-                </div>
-                <div style={{ display: "flex", gap: 3 }}>
-                  <button style={{ ...S.act, color: "#94A3B8" }} onClick={() => setModal({ type: "msg", data: m, msgType: type })}>✎</button>
-                  {list.length > 1 && <button style={{ ...S.act, color: "#EF4444" }} onClick={() => deleteMsg(m.id, type)}>✕</button>}
-                </div>
-              </div>
-              <div style={{ padding: "10px 12px", fontSize: 12, lineHeight: 1.6, color: "#94A3B8", whiteSpace: "pre-wrap" }}>{m.body}</div>
+      <div style={{ padding: 14, background: "#0F172A", borderRadius: 10, border: `1px solid ${todayCount >= target.daily_target && target.daily_target > 0 ? "#10B98140" : "#1E293B"}`, borderLeft: `3px solid ${color}` }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color }}>{category}</div>
+          {isMe && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <button onClick={() => logKpi(person, category, -1)} style={{ ...S.kpiBtn, opacity: todayCount > 0 ? 1 : 0.3 }}>-</button>
+              <span style={{ fontSize: 20, fontWeight: 700, color: "#F1F5F9", fontFamily: "'Outfit',sans-serif", minWidth: 30, textAlign: "center" }}>{todayCount}</span>
+              <button onClick={() => logKpi(person, category, 1)} style={{ ...S.kpiBtn, background: color + "20", borderColor: color + "40", color }}>+</button>
             </div>
-            {i < list.length - 1 && <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 16px" }}><div style={{ flex: 1, height: 1, background: "#1E293B" }} /><span style={{ color: "#475569", fontSize: 9, fontWeight: 500 }}>{list[i + 1]?.delay_days === 0 ? "Immediately" : `Wait ${list[i + 1]?.delay_days}d`}</span><div style={{ flex: 1, height: 1, background: "#1E293B" }} /></div>}
-          </div>))}
+          )}
+          {!isMe && <span style={{ fontSize: 20, fontWeight: 700, color: "#F1F5F9", fontFamily: "'Outfit',sans-serif" }}>{todayCount}</span>}
+        </div>
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, marginBottom: 3 }}>
+            <span style={{ color: "#64748B" }}>Today</span>
+            <span style={{ color: todayCount >= target.daily_target ? "#10B981" : "#94A3B8", fontWeight: 600 }}>{todayCount}/{target.daily_target}</span>
+          </div>
+          <ProgressBar value={todayCount} max={target.daily_target} color={color} />
+        </div>
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, marginBottom: 3 }}>
+            <span style={{ color: "#64748B" }}>This Week</span>
+            <span style={{ color: weeklyCount >= target.weekly_target ? "#10B981" : "#94A3B8", fontWeight: 600 }}>{weeklyCount}/{target.weekly_target}</span>
+          </div>
+          <ProgressBar value={weeklyCount} max={target.weekly_target} color={color} height={6} />
         </div>
       </div>
     );
   };
 
+  const KpiView = () => {
+    const weekDates = getWeekDates();
+    const dayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    return (
+      <div style={S.content}>
+        <div style={S.header}>
+          <div><h1 style={S.h1}>KPIs</h1><p style={S.sub}>Track daily and weekly activity for the whole team</p></div>
+          <button style={S.ghost} onClick={() => setModal({ type: "kpi" })}>⚙ Edit Targets</button>
+        </div>
+
+        {/* Your KPIs */}
+        <div style={{ marginBottom: 24 }}>
+          <h2 style={S.h2}>Your Activity ({user})</h2>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 10 }}>
+            {["DMs", "Looms"].map(cat => <KpiCard key={cat} person={user} category={cat} color={KPI_COLORS[cat]} />)}
+          </div>
+        </div>
+
+        {/* Weekly Heatmap */}
+        <div style={{ marginBottom: 24 }}>
+          <h2 style={S.h2}>This Week</h2>
+          <div style={{ background: "#0F172A", borderRadius: 10, border: "1px solid #1E293B", padding: 14, overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead><tr>
+                <th style={{ ...S.th, padding: "6px 8px" }}></th>
+                {weekDates.map((d, i) => <th key={d} style={{ ...S.th, padding: "6px 8px", color: d === todayStr() ? "#3B82F6" : "#64748B" }}>{dayNames[i]}<br /><span style={{ fontSize: 8, fontWeight: 400 }}>{d.slice(8)}.{d.slice(5, 7)}</span></th>)}
+                <th style={{ ...S.th, padding: "6px 8px", color: "#10B981" }}>Total</th>
+              </tr></thead>
+              <tbody>
+                {TEAM.map(person => {
+                  const activeCategories = ["DMs", "Looms"].filter(cat => { const t = getKpiTarget(person, cat); return t && t.active; });
+                  return activeCategories.map((cat, ci) => (
+                    <tr key={person + cat} style={{ borderBottom: "1px solid #1E293B" }}>
+                      <td style={{ padding: "6px 8px", fontSize: 11, color: "#CBD5E1", fontWeight: 500, whiteSpace: "nowrap" }}>
+                        {ci === 0 && <span style={{ color: "#F1F5F9", fontWeight: 600 }}>{person}</span>}
+                        {ci === 0 && <br />}
+                        <span style={{ color: KPI_COLORS[cat], fontSize: 10 }}>{cat}</span>
+                      </td>
+                      {weekDates.map(d => {
+                        const entry = getKpiEntry(person, cat, d);
+                        const count = entry?.count || 0;
+                        const target = getKpiTarget(person, cat);
+                        const hit = target && count >= target.daily_target && target.daily_target > 0;
+                        return <td key={d} style={{ padding: "6px 8px", textAlign: "center", fontSize: 13, fontWeight: 600, color: count === 0 ? "#334155" : hit ? "#10B981" : "#F1F5F9", fontFamily: "'Outfit',sans-serif" }}>{count || "·"}</td>;
+                      })}
+                      <td style={{ padding: "6px 8px", textAlign: "center", fontSize: 13, fontWeight: 700, color: "#F1F5F9", fontFamily: "'Outfit',sans-serif" }}>{getWeeklyCount(person, cat)}</td>
+                    </tr>
+                  ));
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Team Cards */}
+        <h2 style={S.h2}>Team Overview</h2>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
+          {TEAM.map(person => {
+            const activeCategories = ["DMs", "Looms"].filter(cat => { const t = getKpiTarget(person, cat); return t && t.active; });
+            if (person === user) return null;
+            return (
+              <div key={person} style={{ padding: 16, background: "#0F172A", borderRadius: 12, border: "1px solid #1E293B" }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: "#F1F5F9", marginBottom: 12 }}>{person}</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {activeCategories.map(cat => <KpiCard key={cat} person={person} category={cat} color={KPI_COLORS[cat]} />)}
+                  {activeCategories.length === 0 && <p style={{ color: "#475569", fontSize: 12 }}>No active KPIs</p>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  // ===== MAIN RENDER =====
   return (
     <div style={S.app}>
       {toast && <div style={{ ...S.toast, background: toast.t === "error" ? "#EF4444" : toast.t === "info" ? "#3B82F6" : "#10B981" }}>{toast.m}</div>}
@@ -365,10 +335,7 @@ export default function CRM() {
           <select value={user} onChange={e => setUser(e.target.value)} style={{ width: "100%", background: "#0B1120", border: "1px solid #1E293B", borderRadius: 8, padding: "7px 8px", color: "#F1F5F9", fontSize: 12, fontWeight: 600, fontFamily: "'DM Sans',sans-serif", outline: "none", cursor: "pointer" }}>{TEAM.map(t => <option key={t} value={t}>{t}</option>)}</select>
         </div>
         <nav style={{ display: "flex", flexDirection: "column", gap: 1, padding: "6px 8px", flex: 1 }}>
-          {NAV.map(n => (<button key={n.id} onClick={() => { setView(n.id); setDetailId(null); }} style={{ ...S.nav, ...(view === n.id ? S.navOn : {}) }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d={n.d} /></svg>
-            <span>{n.label}</span>{n.badge && <span style={S.badge}>{n.badge}</span>}
-          </button>))}
+          {NAV.map(n => (<button key={n.id} onClick={() => { setView(n.id); setDetailId(null); }} style={{ ...S.nav, ...(view === n.id ? S.navOn : {}) }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d={n.d} /></svg><span>{n.label}</span>{n.badge && <span style={S.badge}>{n.badge}</span>}</button>))}
         </nav>
         <div style={{ padding: "10px 12px", borderTop: "1px solid #1E293B", display: "flex", flexDirection: "column", gap: 4 }}>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}><span style={{ color: "#64748B" }}>Leads</span><span style={{ color: "#F1F5F9", fontWeight: 700 }}>{contacts.length}</span></div>
@@ -380,57 +347,23 @@ export default function CRM() {
       <div style={S.main}>
         {/* DASHBOARD */}
         {view === "dashboard" && (<div style={S.content}>
-          <div style={S.header}><div><h1 style={S.h1}>Dashboard</h1><p style={S.sub}>Welcome back, {user}</p></div>
-            <button style={S.pri} onClick={() => setModal({ type: "contact", data: null })}>+ Add Lead</button></div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(145px,1fr))", gap: 8, marginBottom: 20 }}>
-            {[{ l: "Contacted This Week", v: stats.contactedWeek, c: "#3B82F6" }, { l: "Contacted This Month", v: stats.contactedMonth, c: "#6366F1" }, { l: "Pipeline Value", v: fmtMoney(stats.pipeline), c: "#10B981" }, { l: "Closed This Month", v: fmtMoney(stats.closedMonth), c: "#F59E0B" }, { l: "Total Revenue", v: fmtMoney(stats.closedTotal), c: "#10B981" }, { l: "Close Rate", v: `${stats.convRate}%`, c: "#8B5CF6" }].map((s, i) => (
-              <div key={i} style={{ padding: 12, background: "#0F172A", borderRadius: 10, border: "1px solid #1E293B", borderTop: `3px solid ${s.c}` }}><div style={{ color: "#64748B", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em" }}>{s.l}</div><div style={{ color: "#F1F5F9", fontSize: 20, fontWeight: 700, fontFamily: "'Outfit',sans-serif", marginTop: 3 }}>{s.v}</div></div>
-            ))}
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 6, marginBottom: 20 }}>
-            {STAGES.map(s => { const cnt = contacts.filter(c => c.stage === s.id).length; return (<div key={s.id} style={{ padding: "12px 10px", background: "#0F172A", borderRadius: 8, border: "1px solid #1E293B", borderLeft: `3px solid ${s.color}`, cursor: "pointer" }} onClick={() => { setView("contacts"); setFilter(s.id); }}><div style={{ color: "#94A3B8", fontSize: 10, fontWeight: 600 }}>{s.label}</div><div style={{ color: "#F1F5F9", fontSize: 22, fontWeight: 700, fontFamily: "'Outfit',sans-serif" }}>{cnt}</div></div>); })}
-          </div>
+          <div style={S.header}><div><h1 style={S.h1}>Dashboard</h1><p style={S.sub}>Welcome back, {user}</p></div><button style={S.pri} onClick={() => setModal({ type: "contact", data: null })}>+ Add Lead</button></div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(145px,1fr))", gap: 8, marginBottom: 20 }}>{[{ l: "Contacted This Week", v: stats.contactedWeek, c: "#3B82F6" }, { l: "Contacted This Month", v: stats.contactedMonth, c: "#6366F1" }, { l: "Pipeline Value", v: fmtMoney(stats.pipeline), c: "#10B981" }, { l: "Closed This Month", v: fmtMoney(stats.closedMonth), c: "#F59E0B" }, { l: "Total Revenue", v: fmtMoney(stats.closedTotal), c: "#10B981" }, { l: "Close Rate", v: `${stats.convRate}%`, c: "#8B5CF6" }].map((s, i) => (<div key={i} style={{ padding: 12, background: "#0F172A", borderRadius: 10, border: "1px solid #1E293B", borderTop: `3px solid ${s.c}` }}><div style={{ color: "#64748B", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em" }}>{s.l}</div><div style={{ color: "#F1F5F9", fontSize: 20, fontWeight: 700, fontFamily: "'Outfit',sans-serif", marginTop: 3 }}>{s.v}</div></div>))}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 6, marginBottom: 20 }}>{STAGES.map(s => { const cnt = contacts.filter(c => c.stage === s.id).length; return (<div key={s.id} style={{ padding: "12px 10px", background: "#0F172A", borderRadius: 8, border: "1px solid #1E293B", borderLeft: `3px solid ${s.color}`, cursor: "pointer" }} onClick={() => { setView("contacts"); setFilter(s.id); }}><div style={{ color: "#94A3B8", fontSize: 10, fontWeight: 600 }}>{s.label}</div><div style={{ color: "#F1F5F9", fontSize: 22, fontWeight: 700, fontFamily: "'Outfit',sans-serif" }}>{cnt}</div></div>); })}</div>
           <h2 style={S.h2}>Today&apos;s Actions ({actionsDue.length})</h2>
-          {actionsDue.length === 0 ? <div style={S.empty}><p style={{ color: "#64748B" }}>Nothing due today!</p></div>
-            : <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 20 }}>{actionsDue.sort((a, b) => urgency(a) - urgency(b)).map(c => { const isOver = urgency(c) < 0; const nm = getNext(c); const nn = getNextN(c); const isO = ["new", "outreach"].includes(c.stage); const msg = isO ? nm : nn; const mt = isO ? "outreach" : "nurture"; return (<div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "#0F172A", borderRadius: 8, border: `1px solid ${isOver ? "#EF444430" : "#1E293B"}` }}><div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}><div style={{ width: 7, height: 7, borderRadius: "50%", background: isOver ? "#EF4444" : "#F59E0B", boxShadow: `0 0 6px ${isOver ? "#EF444460" : "#F59E0B60"}`, flexShrink: 0 }} /><div><div style={{ color: "#F1F5F9", fontWeight: 500, fontSize: 13 }}>{c.name} <span style={{ color: "#64748B", fontWeight: 400, fontSize: 11 }}>({c.assigned_to})</span></div><div style={{ color: "#64748B", fontSize: 11 }}>{msg ? msg.name : "Action needed"}</div></div></div><div style={{ display: "flex", gap: 4, alignItems: "center" }}>{msg && <button style={S.sc} onClick={() => copy(c, mt)}>{copied === c.id + mt ? "Copied!" : "Copy"}</button>}</div></div>); })}</div>}
+          {actionsDue.length === 0 ? <div style={S.empty}><p style={{ color: "#64748B" }}>Nothing due today!</p></div> : <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 20 }}>{actionsDue.sort((a, b) => urgency(a) - urgency(b)).map(c => { const isOver = urgency(c) < 0; const nm = getNext(c); const nn = getNextN(c); const isO = ["new", "outreach"].includes(c.stage); const msg = isO ? nm : nn; const mt = isO ? "outreach" : "nurture"; return (<div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "#0F172A", borderRadius: 8, border: `1px solid ${isOver ? "#EF444430" : "#1E293B"}` }}><div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}><div style={{ width: 7, height: 7, borderRadius: "50%", background: isOver ? "#EF4444" : "#F59E0B", boxShadow: `0 0 6px ${isOver ? "#EF444460" : "#F59E0B60"}`, flexShrink: 0 }} /><div><div style={{ color: "#F1F5F9", fontWeight: 500, fontSize: 13 }}>{c.name} <span style={{ color: "#64748B", fontWeight: 400, fontSize: 11 }}>({c.assigned_to})</span></div><div style={{ color: "#64748B", fontSize: 11 }}>{msg ? msg.name : "Action needed"}</div></div></div><div style={{ display: "flex", gap: 4, alignItems: "center" }}>{msg && <button style={S.sc} onClick={() => copy(c, mt)}>{copied === c.id + mt ? "Copied!" : "Copy"}</button>}</div></div>); })}</div>}
           <h2 style={S.h2}>Team</h2>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8 }}>{TEAM.map(t => { const ml = contacts.filter(c => c.assigned_to === t); const ma = actionsDue.filter(c => c.assigned_to === t); const mc = ml.filter(c => c.stage === "closed").reduce((s, c) => s + (c.closed_value || 0), 0); return (<div key={t} style={{ padding: 12, background: "#0F172A", borderRadius: 10, border: `1px solid ${t === user ? "#3B82F640" : "#1E293B"}` }}><div style={{ color: "#F1F5F9", fontWeight: 600, fontSize: 14, marginBottom: 6 }}>{t}{t === user && <span style={{ color: "#3B82F6", fontSize: 10 }}> (you)</span>}</div><div style={{ display: "flex", flexDirection: "column", gap: 3 }}><div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}><span style={{ color: "#64748B" }}>Leads</span><span style={{ color: "#CBD5E1", fontWeight: 600 }}>{ml.length}</span></div><div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}><span style={{ color: "#64748B" }}>Due Today</span><span style={{ color: ma.length ? "#F59E0B" : "#CBD5E1", fontWeight: 600 }}>{ma.length}</span></div><div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}><span style={{ color: "#64748B" }}>Closed</span><span style={{ color: "#10B981", fontWeight: 600 }}>{fmtMoney(mc)}</span></div></div></div>); })}</div>
         </div>)}
 
+        {/* KPIs */}
+        {view === "kpis" && <KpiView />}
+
         {/* MY LEADS */}
-        {view === "myleads" && (() => {
-          const my = contacts.filter(c => c.assigned_to === user);
-          const over = my.filter(c => urgency(c) < 0).sort((a, b) => urgency(a) - urgency(b));
-          const today2 = my.filter(c => urgency(c) === 0);
-          const upcoming = my.filter(c => { const u2 = urgency(c); return u2 > 0 && u2 <= 7; }).sort((a, b) => urgency(a) - urgency(b));
-          return (<div style={S.content}>
-            <div style={S.header}><div><h1 style={S.h1}>My Leads</h1><p style={S.sub}>{user}&apos;s leads and daily actions</p></div>
-              <button style={S.pri} onClick={() => setModal({ type: "contact", data: null })}>+ Add Lead</button></div>
-            {over.length > 0 && <div style={{ marginBottom: 16 }}><h2 style={{ ...S.h2, color: "#EF4444" }}>Overdue ({over.length})</h2><Table data={over} /></div>}
-            {today2.length > 0 && <div style={{ marginBottom: 16 }}><h2 style={{ ...S.h2, color: "#F59E0B" }}>Due Today ({today2.length})</h2><Table data={today2} /></div>}
-            {upcoming.length > 0 && <div style={{ marginBottom: 16 }}><h2 style={{ ...S.h2, color: "#3B82F6" }}>Upcoming This Week ({upcoming.length})</h2><Table data={upcoming} /></div>}
-            {over.length === 0 && today2.length === 0 && upcoming.length === 0 && <div style={S.empty}><p style={{ color: "#64748B" }}>All caught up!</p></div>}
-            {detailId && <Detail />}
-          </div>);
-        })()}
+        {view === "myleads" && (() => { const my = contacts.filter(c => c.assigned_to === user); const over = my.filter(c => urgency(c) < 0).sort((a, b) => urgency(a) - urgency(b)); const today2 = my.filter(c => urgency(c) === 0); const upcoming = my.filter(c => { const u2 = urgency(c); return u2 > 0 && u2 <= 7; }).sort((a, b) => urgency(a) - urgency(b)); return (<div style={S.content}><div style={S.header}><div><h1 style={S.h1}>My Leads</h1><p style={S.sub}>{user}&apos;s leads and daily actions</p></div><button style={S.pri} onClick={() => setModal({ type: "contact", data: null })}>+ Add Lead</button></div>{over.length > 0 && <div style={{ marginBottom: 16 }}><h2 style={{ ...S.h2, color: "#EF4444" }}>Overdue ({over.length})</h2><Table data={over} /></div>}{today2.length > 0 && <div style={{ marginBottom: 16 }}><h2 style={{ ...S.h2, color: "#F59E0B" }}>Due Today ({today2.length})</h2><Table data={today2} /></div>}{upcoming.length > 0 && <div style={{ marginBottom: 16 }}><h2 style={{ ...S.h2, color: "#3B82F6" }}>Upcoming This Week ({upcoming.length})</h2><Table data={upcoming} /></div>}{over.length === 0 && today2.length === 0 && upcoming.length === 0 && <div style={S.empty}><p style={{ color: "#64748B" }}>All caught up!</p></div>}{detailId && <Detail />}</div>); })()}
 
         {/* ALL CONTACTS */}
-        {view === "contacts" && (<div style={S.content}>
-          <div style={S.header}><div><h1 style={S.h1}>All Leads</h1><p style={S.sub}>{filtered.length} lead{filtered.length !== 1 ? "s" : ""}</p></div>
-            <div style={{ display: "flex", gap: 6 }}>
-              <button style={S.ghost} onClick={() => setModal({ type: "csv" })}>📤 Import CSV</button>
-              <button style={S.pri} onClick={() => setModal({ type: "contact", data: null })}>+ Add Lead</button>
-            </div></div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
-            <div style={S.sBox}><input style={S.sInp} placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} /></div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-              <button style={{ ...S.pill, ...(filter === "all" ? S.pillOn : {}) }} onClick={() => setFilter("all")}>All</button>
-              {STAGES.map(s => <button key={s.id} style={{ ...S.pill, ...(filter === s.id ? S.pillOn : {}) }} onClick={() => setFilter(s.id)}>{s.label} <span style={{ opacity: .5 }}>{contacts.filter(c => c.stage === s.id).length}</span></button>)}
-            </div>
-          </div>
-          {filtered.length === 0 ? <div style={S.empty}><p style={{ color: "#64748B" }}>No leads found.</p></div> : <Table data={filtered} showWho />}
-          {detailId && <Detail />}
-        </div>)}
+        {view === "contacts" && (<div style={S.content}><div style={S.header}><div><h1 style={S.h1}>All Leads</h1><p style={S.sub}>{filtered.length} lead{filtered.length !== 1 ? "s" : ""}</p></div><div style={{ display: "flex", gap: 6 }}><button style={S.ghost} onClick={() => setModal({ type: "csv" })}>📤 Import CSV</button><button style={S.pri} onClick={() => setModal({ type: "contact", data: null })}>+ Add Lead</button></div></div><div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}><div style={S.sBox}><input style={S.sInp} placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} /></div><div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}><button style={{ ...S.pill, ...(filter === "all" ? S.pillOn : {}) }} onClick={() => setFilter("all")}>All</button>{STAGES.map(s => <button key={s.id} style={{ ...S.pill, ...(filter === s.id ? S.pillOn : {}) }} onClick={() => setFilter(s.id)}>{s.label} <span style={{ opacity: .5 }}>{contacts.filter(c => c.stage === s.id).length}</span></button>)}</div></div>{filtered.length === 0 ? <div style={S.empty}><p style={{ color: "#64748B" }}>No leads found.</p></div> : <Table data={filtered} showWho />}{detailId && <Detail />}</div>)}
 
         {view === "messages" && <MsgView type="outreach" />}
         {view === "nurture" && <MsgView type="nurture" />}
@@ -440,12 +373,14 @@ export default function CRM() {
       {modal?.type === "contact" && <ContactModal c={modal.data} team={TEAM} user={user} onClose={() => setModal(null)} onSave={async d => { if (modal.data) await updateContact(modal.data.id, d); else await addContact(d); setModal(null); }} />}
       {modal?.type === "msg" && <MsgModal m={modal.data} total={(modal.msgType === "outreach" ? messages : nurtureM).length} type={modal.msgType} onClose={() => setModal(null)} onSave={async d => { if (modal.data) await updateMsg(modal.data.id, d); else await addMsg(d, modal.msgType); setModal(null); }} />}
       {modal?.type === "csv" && <CSVModal onClose={() => setModal(null)} onImport={importCSV} />}
+      {modal?.type === "kpi" && <KpiSettingsModal targets={kpiTargets} onClose={() => setModal(null)} onSave={updateKpiTarget} />}
       {closeId && <CloseModal c={contacts.find(x => x.id === closeId)} onClose={() => setCloseId(null)} onSave={v => closeDeal(closeId, v)} />}
       {delId && <div style={S.ov} onClick={() => setDelId(null)}><div style={S.cBox} onClick={e => e.stopPropagation()}><h3 style={{ color: "#F1F5F9", fontSize: 15, fontWeight: 600, margin: 0 }}>Delete this lead?</h3><p style={{ color: "#94A3B8", fontSize: 13, margin: "6px 0 14px" }}>This can&apos;t be undone.</p><div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}><button style={S.ghost} onClick={() => setDelId(null)}>Cancel</button><button style={S.danger} onClick={() => deleteContact(delId)}>Delete</button></div></div></div>}
     </div>
   );
 }
 
+// ===== MODAL COMPONENTS =====
 function ContactModal({ c, team, user, onClose, onSave }) {
   const [f, setF] = useState({ name: c?.name || "", ig: c?.ig || "", email: c?.email || "", youtube: c?.youtube || "", website: c?.website || "", notes: c?.notes || "", pipeline_value: c?.pipeline_value || "", assigned_to: c?.assigned_to || user });
   const ref = useRef(null); useEffect(() => { ref.current?.focus(); }, []);
@@ -504,6 +439,44 @@ function CloseModal({ c, onClose, onSave }) {
   </div></div>);
 }
 
+function KpiSettingsModal({ targets, onClose, onSave }) {
+  const [edits, setEdits] = useState(targets.map(t => ({ ...t })));
+  const update = (id, field, val) => setEdits(p => p.map(t => t.id === id ? { ...t, [field]: val } : t));
+  return (<div style={S.ov} onClick={onClose}><div style={{ ...S.modal, maxWidth: 600 }} onClick={e => e.stopPropagation()}>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}><h2 style={{ color: "#F1F5F9", fontSize: 17, fontWeight: 700, fontFamily: "'Outfit',sans-serif", margin: 0 }}>KPI Settings</h2><button style={S.x} onClick={onClose}>✕</button></div>
+    <p style={{ color: "#94A3B8", fontSize: 12, marginBottom: 16 }}>Set daily and weekly targets for each person. Toggle categories on/off.</p>
+    {["Leon", "Kent", "Lukas"].map(person => (
+      <div key={person} style={{ marginBottom: 16 }}>
+        <div style={{ color: "#F1F5F9", fontWeight: 600, fontSize: 14, marginBottom: 8 }}>{person}</div>
+        {["DMs", "Looms"].map(cat => {
+          const t = edits.find(x => x.person === person && x.category === cat);
+          if (!t) return null;
+          return (
+            <div key={cat} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, padding: "8px 10px", background: "#0B1120", borderRadius: 8, border: `1px solid ${t.active ? KPI_COLORS[cat] + "30" : "#1E293B"}` }}>
+              <button onClick={() => update(t.id, "active", !t.active)} style={{ width: 32, height: 20, borderRadius: 10, border: "none", background: t.active ? KPI_COLORS[cat] : "#334155", cursor: "pointer", position: "relative", padding: 0 }}>
+                <div style={{ width: 16, height: 16, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: t.active ? 14 : 2, transition: "left 0.2s" }} />
+              </button>
+              <span style={{ color: KPI_COLORS[cat], fontSize: 12, fontWeight: 600, width: 50 }}>{cat}</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <label style={{ color: "#64748B", fontSize: 10 }}>Daily:</label>
+                <input type="number" min="0" value={t.daily_target} onChange={e => update(t.id, "daily_target", parseInt(e.target.value) || 0)} style={{ ...S.ip, width: 60, padding: "4px 6px", textAlign: "center" }} disabled={!t.active} />
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <label style={{ color: "#64748B", fontSize: 10 }}>Weekly:</label>
+                <input type="number" min="0" value={t.weekly_target} onChange={e => update(t.id, "weekly_target", parseInt(e.target.value) || 0)} style={{ ...S.ip, width: 60, padding: "4px 6px", textAlign: "center" }} disabled={!t.active} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    ))}
+    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 16 }}>
+      <button style={S.ghost} onClick={onClose}>Cancel</button>
+      <button style={S.pri} onClick={async () => { for (const t of edits) { await onSave(t.id, { daily_target: t.daily_target, weekly_target: t.weekly_target, active: t.active }); } onClose(); }}>Save All</button>
+    </div>
+  </div></div>);
+}
+
 const S = {
   app: { display: "flex", height: "100vh", background: "#0B1120", fontFamily: "'DM Sans',sans-serif", color: "#CBD5E1", overflow: "hidden" },
   side: { width: 200, minWidth: 200, background: "#0F172A", borderRight: "1px solid #1E293B", display: "flex", flexDirection: "column", padding: "14px 0" },
@@ -549,4 +522,5 @@ const S = {
   ip: { background: "#0B1120", border: "1px solid #1E293B", borderRadius: 8, padding: "7px 10px", color: "#F1F5F9", fontSize: 12, outline: "none", fontFamily: "'DM Sans',sans-serif" },
   x: { background: "transparent", border: "none", color: "#64748B", fontSize: 16, cursor: "pointer", padding: 3 },
   toast: { position: "fixed", top: 14, right: 14, padding: "8px 14px", borderRadius: 8, color: "#fff", fontSize: 12, fontWeight: 600, fontFamily: "'DM Sans',sans-serif", zIndex: 2000, boxShadow: "0 8px 30px rgba(0,0,0,.3)", animation: "slideIn .3s ease" },
+  kpiBtn: { width: 32, height: 32, borderRadius: 8, border: "1px solid #334155", background: "#1E293B", color: "#F1F5F9", fontSize: 16, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'DM Sans',sans-serif" },
 };
