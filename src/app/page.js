@@ -292,96 +292,61 @@ export default function CRM() {
 
   // === LEAD FINDER ===
   const LeadFinder = () => {
-    const [q, setQ] = useState({ titles: "", locations: "", industries: "", keywords: "", seniorities: "" });
-    const [results, setResults] = useState([]);
-    const [searching, setSearching] = useState(false);
-    const [error, setError] = useState(null);
-    const [selected, setSelected] = useState(new Set());
-
-    const searchApollo = async () => {
-      setSearching(true); setError(null);
-      try {
-        const res = await fetch("/api/apollo", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ titles: q.titles ? q.titles.split(",").map(t => t.trim()) : [], locations: q.locations ? q.locations.split(",").map(t => t.trim()) : [], industries: q.industries ? q.industries.split(",").map(t => t.trim()) : [], keywords: q.keywords, seniorities: q.seniorities ? q.seniorities.split(",").map(t => t.trim()) : [] }),
-        });
-        const data = await res.json();
-        if (data.error) { setError(data.error); } else { setResults(data.people || []); }
-      } catch { setError("Failed to connect. Make sure your Apollo API key is set in Vercel."); }
-      setSearching(false);
-    };
-
-    const importSelected = async () => {
-      const leads = results.filter((_, i) => selected.has(i));
-      if (leads.length === 0) return flash("Select some leads first", "error");
-      const rows = leads.map(p => ({
-        name: `${p.first_name || ""} ${p.last_name || ""}`.trim(),
-        email: p.email || "",
-        website: p.organization?.website_url || "",
-        ig: "", youtube: "",
-        notes: `${p.title || ""} at ${p.organization?.name || ""}`.trim(),
-        stage: "new", current_step: 0, nurture_step: 0, created_at: todayStr(),
-        next_follow_up: todayStr(), pipeline_value: 0, assigned_to: user,
-        history: [], nurture_history: [],
-      }));
-      const { error } = await supabase.from("contacts").insert(rows);
-      if (!error) { flash(`Added ${rows.length} leads to CRM!`); logActivity(user, "found_leads", `${rows.length} from Apollo`); setSelected(new Set()); } else flash("Error importing", "error");
-    };
-
-    const toggleAll = () => { if (selected.size === results.length) setSelected(new Set()); else setSelected(new Set(results.map((_, i) => i))); };
+    const [csvText, setCsvText] = useState("");
+    const [quickForm, setQuickForm] = useState({ name: "", email: "", ig: "", notes: "" });
+    const fileRef = useRef(null);
+    const handleFile = e => { const f = e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = ev => setCsvText(ev.target.result); r.readAsText(f); };
+    const quickAdd = async () => { if (!quickForm.name.trim()) return; await addContact({ ...quickForm, pipeline_value: 0, assigned_to: user }); setQuickForm({ name: "", email: "", ig: "", notes: "" }); };
 
     return (<div style={S.content}>
-      <div style={S.header}><div><h1 style={S.h1}>Lead Finder</h1><p style={S.sub}>Search Apollo&apos;s database and import leads straight into your CRM</p></div></div>
+      <div style={S.header}><div><h1 style={S.h1}>Lead Finder</h1><p style={S.sub}>Find leads, import them, and start outreach</p></div></div>
 
-      {/* Search form */}
-      <div style={{ background: "#0F172A", borderRadius: 12, border: "1px solid #1E293B", padding: 16, marginBottom: 16 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div style={S.fi}><label style={S.lb}>Job Titles (comma separated)</label><input style={S.ip} value={q.titles} onChange={e => setQ({ ...q, titles: e.target.value })} placeholder="CEO, Founder, Coach, Consultant" /></div>
-          <div style={S.fi}><label style={S.lb}>Locations</label><input style={S.ip} value={q.locations} onChange={e => setQ({ ...q, locations: e.target.value })} placeholder="United States, United Kingdom" /></div>
-          <div style={S.fi}><label style={S.lb}>Industries / Keywords</label><input style={S.ip} value={q.industries} onChange={e => setQ({ ...q, industries: e.target.value })} placeholder="SaaS, E-commerce, Fitness" /></div>
-          <div style={S.fi}><label style={S.lb}>Seniority</label><input style={S.ip} value={q.seniorities} onChange={e => setQ({ ...q, seniorities: e.target.value })} placeholder="founder, c_suite, owner, director" /></div>
+      {/* Quick Add */}
+      <div style={{ marginBottom: 20 }}>
+        <h2 style={S.h2}>Quick Add Lead</h2>
+        <div style={{ background: "#0F172A", borderRadius: 10, border: "1px solid #1E293B", padding: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr auto", gap: 8, alignItems: "end" }}>
+            <div style={S.fi}><label style={S.lb}>Name</label><input style={S.ip} value={quickForm.name} onChange={e => setQuickForm({ ...quickForm, name: e.target.value })} placeholder="John Smith" onKeyDown={e => e.key === "Enter" && quickAdd()} /></div>
+            <div style={S.fi}><label style={S.lb}>Email</label><input style={S.ip} value={quickForm.email} onChange={e => setQuickForm({ ...quickForm, email: e.target.value })} placeholder="john@company.com" /></div>
+            <div style={S.fi}><label style={S.lb}>Instagram</label><input style={S.ip} value={quickForm.ig} onChange={e => setQuickForm({ ...quickForm, ig: e.target.value })} placeholder="@handle" /></div>
+            <div style={S.fi}><label style={S.lb}>Notes</label><input style={S.ip} value={quickForm.notes} onChange={e => setQuickForm({ ...quickForm, notes: e.target.value })} placeholder="CEO at Acme" /></div>
+            <button style={{ ...S.pri, height: 36 }} onClick={quickAdd}>+ Add</button>
+          </div>
         </div>
-        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-          <button style={{ ...S.pri, opacity: searching ? 0.5 : 1 }} onClick={searchApollo} disabled={searching}>{searching ? "Searching..." : "🔍 Search Leads"}</button>
-          {results.length > 0 && selected.size > 0 && <button style={{ ...S.pri, background: "linear-gradient(135deg,#10B981,#059669)" }} onClick={importSelected}>Import {selected.size} Lead{selected.size !== 1 ? "s" : ""} to CRM</button>}
-        </div>
-        {error && <p style={{ color: "#EF4444", fontSize: 12, marginTop: 8 }}>{error}</p>}
       </div>
 
-      {/* Results */}
-      {results.length > 0 && (
-        <div style={S.tw}>
-          <table style={S.tbl}>
-            <thead><tr>
-              <th style={{ ...S.th, width: 30 }}><input type="checkbox" checked={selected.size === results.length} onChange={toggleAll} style={{ cursor: "pointer" }} /></th>
-              <th style={S.th}>Name</th>
-              <th style={S.th}>Title</th>
-              <th style={S.th}>Company</th>
-              <th style={S.th}>Email</th>
-              <th style={S.th}>Location</th>
-            </tr></thead>
-            <tbody>
-              {results.map((p, i) => (
-                <tr key={i} style={{ ...S.tr, background: selected.has(i) ? "#1E293B" : "transparent" }} onClick={() => { const n = new Set(selected); if (n.has(i)) n.delete(i); else n.add(i); setSelected(n); }}>
-                  <td style={S.td}><input type="checkbox" checked={selected.has(i)} readOnly style={{ cursor: "pointer" }} /></td>
-                  <td style={S.td}><span style={{ color: "#F1F5F9", fontWeight: 500 }}>{p.first_name} {p.last_name}</span></td>
-                  <td style={S.td}><span style={{ color: "#94A3B8", fontSize: 12 }}>{p.title || "-"}</span></td>
-                  <td style={S.td}><span style={{ color: "#CBD5E1", fontSize: 12 }}>{p.organization?.name || "-"}</span></td>
-                  <td style={S.td}><span style={{ color: p.email ? "#10B981" : "#475569", fontSize: 12 }}>{p.email || "No email"}</span></td>
-                  <td style={S.td}><span style={{ color: "#64748B", fontSize: 11 }}>{p.city || ""}{p.state ? `, ${p.state}` : ""}{p.country ? `, ${p.country}` : ""}</span></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {/* Where to find leads */}
+      <div style={{ marginBottom: 20 }}>
+        <h2 style={S.h2}>Where to Find Leads</h2>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+          {[
+            { name: "Apollo.io", desc: "Search 275M+ contacts by title, industry, location. Export as CSV and import below.", url: "https://app.apollo.io/", color: "#6366F1", free: "Free: ~100 credits/mo" },
+            { name: "LinkedIn + ContactOut", desc: "Browse LinkedIn profiles. Use ContactOut extension to grab emails.", url: "https://www.linkedin.com/sales/", color: "#0A66C2", free: "ContactOut: 4 free/day" },
+            { name: "Hunter.io", desc: "Enter any company domain and find all the emails at that company.", url: "https://hunter.io/search", color: "#F59E0B", free: "Free: 25 searches/mo" },
+            { name: "Snov.io", desc: "Email finder + drip campaigns. Good for building cold email lists.", url: "https://app.snov.io/", color: "#10B981", free: "Free: 50 credits/mo" },
+          ].map(s => (
+            <a key={s.name} href={s.url} target="_blank" rel="noopener noreferrer" style={{ padding: 14, background: "#0F172A", borderRadius: 10, border: "1px solid #1E293B", borderTop: `3px solid ${s.color}`, textDecoration: "none", cursor: "pointer", display: "block" }}>
+              <div style={{ color: "#F1F5F9", fontWeight: 600, fontSize: 14, marginBottom: 4 }}>{s.name}</div>
+              <div style={{ color: "#94A3B8", fontSize: 11, lineHeight: 1.4, marginBottom: 6 }}>{s.desc}</div>
+              <div style={{ color: s.color, fontSize: 10, fontWeight: 600 }}>{s.free}</div>
+            </a>
+          ))}
         </div>
-      )}
+      </div>
 
-      {results.length === 0 && !searching && (
-        <div style={S.empty}>
-          <p style={{ color: "#64748B", fontSize: 13, textAlign: "center" }}>Search for leads by job title, location, and industry. Results come from Apollo&apos;s database of 275M+ contacts.</p>
-          <p style={{ color: "#475569", fontSize: 11, marginTop: 8, textAlign: "center" }}>You need an Apollo API key set in Vercel env variables as APOLLO_API_KEY.<br />Get your free key at <a href="https://app.apollo.io" target="_blank" rel="noopener noreferrer" style={{ color: "#3B82F6" }}>app.apollo.io</a></p>
+      {/* CSV Import */}
+      <div>
+        <h2 style={S.h2}>Import from CSV</h2>
+        <div style={{ background: "#0F172A", borderRadius: 10, border: "1px solid #1E293B", padding: 14 }}>
+          <p style={{ color: "#94A3B8", fontSize: 12, marginBottom: 12 }}>Export leads from Apollo, Hunter, or any tool as CSV. Then upload here. Auto-maps Name, Email, Instagram, Website, YouTube, Notes, Value, and Assigned To columns.</p>
+          <input type="file" accept=".csv,.txt" ref={fileRef} onChange={handleFile} style={{ display: "none" }} />
+          <button style={{ ...S.ghost, width: "100%", padding: 14, marginBottom: 10, borderStyle: "dashed", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }} onClick={() => fileRef.current?.click()}>
+            {csvText ? "✓ File loaded! Click Import below." : "📤 Choose CSV File"}
+          </button>
+          <textarea style={{ ...S.ip, width: "100%", minHeight: 80, resize: "vertical", fontSize: 11, boxSizing: "border-box", marginBottom: 10 }} value={csvText} onChange={e => setCsvText(e.target.value)} placeholder={"Or paste CSV data here:\nname,email,instagram\nJohn Smith,john@company.com,@john"} />
+          <button style={{ ...S.pri, opacity: csvText.trim() ? 1 : 0.5 }} onClick={() => { if (csvText.trim()) { importCSV(csvText); setCsvText(""); } }} disabled={!csvText.trim()}>Import Leads to CRM</button>
         </div>
-      )}
+      </div>
     </div>);
   };
 
