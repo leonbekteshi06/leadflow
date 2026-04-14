@@ -52,37 +52,8 @@ export default function CRM() {
   const [selected, setSelected] = useState(new Set());
   const [activeOutreachSeq, setActiveOutreachSeq] = useState("Default");
   const [activeNurtureSeq, setActiveNurtureSeq] = useState("Default");
-  const [weeklyPopup, setWeeklyPopup] = useState(null);
 
   useEffect(() => { if (typeof window !== "undefined") localStorage.setItem("lf-user", user); }, [user]);
-
-  // Weekly winner/loser popup
-  useEffect(() => {
-    if (typeof window === "undefined" || kpiEntries.length === 0 || kpiTargets.length === 0) return;
-    const thisWeek = weekStart();
-    const popupKey = `lf-weekly-${user}-${thisWeek}`;
-    if (localStorage.getItem(popupKey)) return;
-    const lastWeekStart = addDays(thisWeek, -7);
-    const lastWeekDays = Array.from({ length: 7 }, (_, i) => addDays(lastWeekStart, i));
-    const totals = TEAM.map(p => {
-      const activeTargets = kpiTargets.filter(t => t.person === p && t.active && t.daily_target > 0);
-      if (activeTargets.length === 0) return { person: p, daysHit: 0, totalDays: 7 };
-      let daysHit = 0;
-      lastWeekDays.forEach(d => {
-        const allHit = activeTargets.every(t => {
-          const entry = kpiEntries.find(e => e.person === p && e.category === t.category && e.date === d);
-          return entry && entry.count >= t.daily_target;
-        });
-        if (allHit) daysHit++;
-      });
-      return { person: p, daysHit, totalDays: 7 };
-    }).sort((a, b) => b.daysHit - a.daysHit);
-    if (totals[0].daysHit === 0) return;
-    const winner = totals[0];
-    const isWinner = user === winner.person;
-    localStorage.setItem(popupKey, "1");
-    setWeeklyPopup({ winner: winner.person, winnerDays: winner.daysHit, totals, isWinner });
-  }, [user, kpiEntries, kpiTargets]);
 
   useEffect(() => {
     const load = async () => {
@@ -257,6 +228,23 @@ export default function CRM() {
     const weekDates = getWeekDates();
     const dayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     const medals = ["🥇", "🥈", "🥉"];
+    const ws = weekStart();
+    const daysSoFar = Math.max(1, daysDiff(ws, todayStr()) + 1);
+    const weekDaysSoFar = Array.from({ length: daysSoFar }, (_, i) => addDays(ws, i));
+    const kpiRank = TEAM.map(p => {
+      const activeTargets = kpiTargets.filter(t => t.person === p && t.active && t.daily_target > 0);
+      if (activeTargets.length === 0) return { person: p, daysHit: 0 };
+      let daysHit = 0;
+      weekDaysSoFar.forEach(d => {
+        const allHit = activeTargets.every(t => {
+          const entry = getKpiEntry(p, t.category, d);
+          return entry && entry.count >= t.daily_target;
+        });
+        if (allHit) daysHit++;
+      });
+      return { person: p, daysHit };
+    }).sort((a, b) => b.daysHit - a.daysHit);
+    const kingPerson = kpiRank[0]?.daysHit > 0 ? kpiRank[0].person : null;
     return (<div style={S.content}>
       <div style={S.header}><div><h1 style={S.h1}>KPIs</h1><p style={S.sub}>Team performance and accountability</p></div><button style={S.ghost} onClick={() => setModal({ type: "kpi" })}>⚙ Edit Targets</button></div>
 
@@ -264,15 +252,25 @@ export default function CRM() {
       <div style={{ marginBottom: 24 }}>
         <h2 style={S.h2}>Leaderboard (This Week)</h2>
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {lb.map((p, i) => (
+          {lb.map((p, i) => {
+            const rank = kpiRank.find(r => r.person === p.person);
+            const isKing = kingPerson && p.person === kingPerson;
+            const isGay = kingPerson && p.person !== kingPerson;
+            return (
             <div key={p.person} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", background: "#0F172A", borderRadius: 10, border: `1px solid ${i === 0 ? "#F59E0B30" : "#1E293B"}`, borderLeft: i === 0 ? "3px solid #F59E0B" : i === 1 ? "3px solid #94A3B8" : i === 2 ? "3px solid #B45309" : "3px solid #1E293B" }}>
               <span style={{ fontSize: 20 }}>{medals[i] || `#${i + 1}`}</span>
               <div style={{ flex: 1 }}>
-                <div style={{ color: "#F1F5F9", fontWeight: 600, fontSize: 15 }}>{p.person}{p.person === user && <span style={{ color: "#3B82F6", fontSize: 10 }}> (you)</span>}</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ color: "#F1F5F9", fontWeight: 600, fontSize: 15 }}>{p.person}</span>
+                  {p.person === user && <span style={{ color: "#3B82F6", fontSize: 10 }}>(you)</span>}
+                  {isKing && <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: "#F59E0B20", color: "#F59E0B" }}>👑 KING</span>}
+                  {isGay && <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: "#EC489920", color: "#EC4899" }}>🏳️‍🌈 officially gay</span>}
+                </div>
                 <div style={{ display: "flex", gap: 12, marginTop: 2 }}>
                   {p.dmTarget?.active && <span style={{ fontSize: 11, color: "#3B82F6" }}>{p.weeklyDMs} DMs</span>}
                   {p.loomTarget?.active && <span style={{ fontSize: 11, color: "#EC4899" }}>{p.weeklyLooms} Looms</span>}
                   {p.dmStreak > 0 && <span style={{ fontSize: 11, color: "#F59E0B" }}>🔥 {p.dmStreak}d streak</span>}
+                  <span style={{ fontSize: 11, color: rank?.daysHit > 0 ? "#10B981" : "#475569" }}>KPIs hit: {rank?.daysHit || 0}/{daysSoFar}d</span>
                 </div>
               </div>
               <div style={{ textAlign: "right" }}>
@@ -280,7 +278,7 @@ export default function CRM() {
                 <div style={{ color: "#64748B", fontSize: 10 }}>this week</div>
               </div>
             </div>
-          ))}
+          ); })}
         </div>
       </div>
 
@@ -437,7 +435,6 @@ export default function CRM() {
       {modal?.type === "kpi" && <KpiSettingsModal targets={kpiTargets} onClose={() => setModal(null)} onSave={updateKpiTarget} />}
       {closeId && <CloseModal c={contacts.find(x => x.id === closeId)} onClose={() => setCloseId(null)} onSave={v => closeDeal(closeId, v)} />}
       {delId && <div style={S.ov} onClick={() => setDelId(null)}><div style={S.cBox} onClick={e => e.stopPropagation()}><h3 style={{ color: "#F1F5F9", fontSize: 15, fontWeight: 600, margin: 0 }}>Delete this lead?</h3><p style={{ color: "#94A3B8", fontSize: 13, margin: "6px 0 14px" }}>Can&apos;t be undone.</p><div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}><button style={S.ghost} onClick={() => setDelId(null)}>Cancel</button><button style={S.danger} onClick={() => deleteContact(delId)}>Delete</button></div></div></div>}
-      {weeklyPopup && <div style={S.ov} onClick={() => setWeeklyPopup(null)}><div style={{ ...S.cBox, width: 420, textAlign: "center", padding: 28 }} onClick={e => e.stopPropagation()}>{weeklyPopup.isWinner ? (<><div style={{ fontSize: 48, marginBottom: 8 }}>👑</div><h2 style={{ color: "#F59E0B", fontSize: 22, fontWeight: 800, fontFamily: "'Outfit',sans-serif", margin: "0 0 6px" }}>YOU WON LAST WEEK</h2><p style={{ color: "#F1F5F9", fontSize: 15, margin: "0 0 12px" }}>Hit your KPIs <span style={{ color: "#10B981", fontWeight: 700 }}>{weeklyPopup.winnerDays}/7</span> days</p><p style={{ color: "#94A3B8", fontSize: 12, margin: "0 0 16px" }}>Most consistent on the team. Keep going.</p></>) : (<><div style={{ fontSize: 48, marginBottom: 8 }}>🏳️‍🌈</div><h2 style={{ color: "#EC4899", fontSize: 22, fontWeight: 800, fontFamily: "'Outfit',sans-serif", margin: "0 0 6px" }}>Congrats, you&apos;re officially gay</h2><p style={{ color: "#94A3B8", fontSize: 13, margin: "0 0 6px" }}><span style={{ color: "#F59E0B", fontWeight: 700 }}>{weeklyPopup.winner}</span> hit KPIs <span style={{ color: "#10B981", fontWeight: 700 }}>{weeklyPopup.winnerDays}/7</span> days last week</p><p style={{ color: "#64748B", fontSize: 11, margin: "0 0 16px" }}>You hit yours {weeklyPopup.totals.find(t => t.person === user)?.daysHit || 0}/7 days. Do better.</p></>)}<div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 16 }}>{weeklyPopup.totals.map((t, i) => (<div key={t.person} style={{ display: "flex", justifyContent: "space-between", padding: "6px 12px", background: "#0B1120", borderRadius: 6, border: `1px solid ${i === 0 ? "#F59E0B30" : "#1E293B"}` }}><span style={{ color: i === 0 ? "#F59E0B" : "#94A3B8", fontSize: 12, fontWeight: 600 }}>{i === 0 ? "👑 " : ""}{t.person}</span><span style={{ color: "#F1F5F9", fontSize: 12, fontWeight: 700, fontFamily: "'Outfit',sans-serif" }}>{t.daysHit}/7 days</span></div>))}</div><button style={{ ...S.pri, width: "100%", justifyContent: "center" }} onClick={() => setWeeklyPopup(null)}>{weeklyPopup.isWinner ? "Let's run it back" : "Fine, I'll do better"}</button></div></div>}
     </div>
   );
 }
