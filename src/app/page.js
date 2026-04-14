@@ -52,8 +52,26 @@ export default function CRM() {
   const [selected, setSelected] = useState(new Set());
   const [activeOutreachSeq, setActiveOutreachSeq] = useState("Default");
   const [activeNurtureSeq, setActiveNurtureSeq] = useState("Default");
+  const [weeklyPopup, setWeeklyPopup] = useState(null);
 
   useEffect(() => { if (typeof window !== "undefined") localStorage.setItem("lf-user", user); }, [user]);
+
+  // Weekly winner/loser popup
+  useEffect(() => {
+    if (typeof window === "undefined" || kpiEntries.length === 0) return;
+    const thisWeek = weekStart();
+    const popupKey = `lf-weekly-${user}-${thisWeek}`;
+    if (localStorage.getItem(popupKey)) return;
+    const lastWeekStart = addDays(thisWeek, -7);
+    const lastWeekEntries = kpiEntries.filter(e => e.date >= lastWeekStart && e.date < thisWeek);
+    if (lastWeekEntries.length === 0) return;
+    const totals = TEAM.map(p => ({ person: p, total: lastWeekEntries.filter(e => e.person === p).reduce((s, e) => s + (e.count || 0), 0) })).sort((a, b) => b.total - a.total);
+    if (totals[0].total === 0) return;
+    const winner = totals[0];
+    const isWinner = user === winner.person;
+    localStorage.setItem(popupKey, "1");
+    setWeeklyPopup({ winner: winner.person, winnerTotal: winner.total, totals, isWinner });
+  }, [user, kpiEntries]);
 
   useEffect(() => {
     const load = async () => {
@@ -408,6 +426,7 @@ export default function CRM() {
       {modal?.type === "kpi" && <KpiSettingsModal targets={kpiTargets} onClose={() => setModal(null)} onSave={updateKpiTarget} />}
       {closeId && <CloseModal c={contacts.find(x => x.id === closeId)} onClose={() => setCloseId(null)} onSave={v => closeDeal(closeId, v)} />}
       {delId && <div style={S.ov} onClick={() => setDelId(null)}><div style={S.cBox} onClick={e => e.stopPropagation()}><h3 style={{ color: "#F1F5F9", fontSize: 15, fontWeight: 600, margin: 0 }}>Delete this lead?</h3><p style={{ color: "#94A3B8", fontSize: 13, margin: "6px 0 14px" }}>Can&apos;t be undone.</p><div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}><button style={S.ghost} onClick={() => setDelId(null)}>Cancel</button><button style={S.danger} onClick={() => deleteContact(delId)}>Delete</button></div></div></div>}
+      {weeklyPopup && <div style={S.ov} onClick={() => setWeeklyPopup(null)}><div style={{ ...S.cBox, width: 420, textAlign: "center", padding: 28 }} onClick={e => e.stopPropagation()}>{weeklyPopup.isWinner ? (<><div style={{ fontSize: 48, marginBottom: 8 }}>👑</div><h2 style={{ color: "#F59E0B", fontSize: 22, fontWeight: 800, fontFamily: "'Outfit',sans-serif", margin: "0 0 6px" }}>YOU WON LAST WEEK</h2><p style={{ color: "#F1F5F9", fontSize: 15, margin: "0 0 12px" }}>Top performer with <span style={{ color: "#10B981", fontWeight: 700 }}>{weeklyPopup.winnerTotal}</span> outreaches</p><p style={{ color: "#94A3B8", fontSize: 12, margin: "0 0 16px" }}>Keep going. The other two are still catching up.</p></>) : (<><div style={{ fontSize: 48, marginBottom: 8 }}>🏳️‍🌈</div><h2 style={{ color: "#EC4899", fontSize: 22, fontWeight: 800, fontFamily: "'Outfit',sans-serif", margin: "0 0 6px" }}>Congrats, you&apos;re officially gay</h2><p style={{ color: "#94A3B8", fontSize: 13, margin: "0 0 6px" }}><span style={{ color: "#F59E0B", fontWeight: 700 }}>{weeklyPopup.winner}</span> smoked you last week with <span style={{ color: "#10B981", fontWeight: 700 }}>{weeklyPopup.winnerTotal}</span> outreaches</p><p style={{ color: "#64748B", fontSize: 11, margin: "0 0 16px" }}>You had {weeklyPopup.totals.find(t => t.person === user)?.total || 0}. Do better this week.</p></>)}<div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 16 }}>{weeklyPopup.totals.map((t, i) => (<div key={t.person} style={{ display: "flex", justifyContent: "space-between", padding: "6px 12px", background: "#0B1120", borderRadius: 6, border: `1px solid ${i === 0 ? "#F59E0B30" : "#1E293B"}` }}><span style={{ color: i === 0 ? "#F59E0B" : "#94A3B8", fontSize: 12, fontWeight: 600 }}>{i === 0 ? "👑 " : ""}{t.person}</span><span style={{ color: "#F1F5F9", fontSize: 12, fontWeight: 700, fontFamily: "'Outfit',sans-serif" }}>{t.total}</span></div>))}</div><button style={{ ...S.pri, width: "100%", justifyContent: "center" }} onClick={() => setWeeklyPopup(null)}>{weeklyPopup.isWinner ? "Let's run it back" : "Fine, I'll do better"}</button></div></div>}
     </div>
   );
 }
