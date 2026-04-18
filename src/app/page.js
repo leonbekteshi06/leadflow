@@ -152,6 +152,9 @@ export default function CRM() {
 
   // Leaderboard data
   const getLeaderboard = () => {
+    const ws = weekStart();
+    const daysSoFar = Math.max(1, daysDiff(ws, todayStr()) + 1);
+    const weekDaysSoFar = Array.from({ length: daysSoFar }, (_, i) => addDays(ws, i));
     return TEAM.map(person => {
       const weeklyDMs = getWeeklyCount(person, "DMs");
       const weeklyLooms = getWeeklyCount(person, "Looms");
@@ -164,8 +167,11 @@ export default function CRM() {
       const totalWeekly = weeklyDMs + weeklyLooms;
       const myLeads = contacts.filter(c => c.assigned_to === person);
       const closedVal = myLeads.filter(c => c.stage === "closed").reduce((s, c) => s + (c.closed_value || 0), 0);
-      return { person, weeklyDMs, weeklyLooms, todayDMs, todayLooms, dmTarget, loomTarget, dmStreak, loomStreak, totalWeekly, closedVal, leads: myLeads.length };
-    }).sort((a, b) => b.totalWeekly - a.totalWeekly);
+      const activeTargets = kpiTargets.filter(t => t.person === person && t.active && t.daily_target > 0);
+      let daysHit = 0;
+      if (activeTargets.length > 0) { weekDaysSoFar.forEach(d => { const allHit = activeTargets.every(t => { const entry = getKpiEntry(person, t.category, d); return entry && entry.count >= t.daily_target; }); if (allHit) daysHit++; }); }
+      return { person, weeklyDMs, weeklyLooms, todayDMs, todayLooms, dmTarget, loomTarget, dmStreak, loomStreak, totalWeekly, closedVal, leads: myLeads.length, daysHit, daysSoFar };
+    }).sort((a, b) => b.daysHit - a.daysHit || b.totalWeekly - a.totalWeekly);
   };
 
   const filtered = contacts.filter(c => filter === "all" || c.stage === filter).filter(c => { if (!search) return true; const s = search.toLowerCase(); return c.name.toLowerCase().includes(s) || c.ig?.toLowerCase().includes(s) || c.email?.toLowerCase().includes(s) || c.notes?.toLowerCase().includes(s); }).sort((a, b) => { let av, bv; if (sortBy === "next_follow_up") { av = a.next_follow_up || "9999"; bv = b.next_follow_up || "9999"; } else if (sortBy === "name") { av = a.name.toLowerCase(); bv = b.name.toLowerCase(); } else if (sortBy === "stage") { av = STAGES.findIndex(s => s.id === a.stage); bv = STAGES.findIndex(s => s.id === b.stage); } else { av = a.created_at; bv = b.created_at; } return sortDir === "asc" ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1); });
@@ -234,23 +240,7 @@ export default function CRM() {
     const weekDates = getWeekDates();
     const dayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     const medals = ["🥇", "🥈", "🥉"];
-    const ws = weekStart();
-    const daysSoFar = Math.max(1, daysDiff(ws, todayStr()) + 1);
-    const weekDaysSoFar = Array.from({ length: daysSoFar }, (_, i) => addDays(ws, i));
-    const kpiRank = TEAM.map(p => {
-      const activeTargets = kpiTargets.filter(t => t.person === p && t.active && t.daily_target > 0);
-      if (activeTargets.length === 0) return { person: p, daysHit: 0 };
-      let daysHit = 0;
-      weekDaysSoFar.forEach(d => {
-        const allHit = activeTargets.every(t => {
-          const entry = getKpiEntry(p, t.category, d);
-          return entry && entry.count >= t.daily_target;
-        });
-        if (allHit) daysHit++;
-      });
-      return { person: p, daysHit };
-    }).sort((a, b) => b.daysHit - a.daysHit);
-    const kingPerson = kpiRank[0]?.daysHit > 0 ? kpiRank[0].person : null;
+    const kingPerson = lb[0]?.daysHit > 0 ? lb[0].person : null;
     return (<div style={S.content}>
       <div style={S.header}><div><h1 style={S.h1}>KPIs</h1><p style={S.sub}>Team performance and accountability</p></div><button style={S.ghost} onClick={() => setModal({ type: "kpi" })}>⚙ Edit Targets</button></div>
 
@@ -259,7 +249,6 @@ export default function CRM() {
         <h2 style={S.h2}>Leaderboard (This Week)</h2>
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {lb.map((p, i) => {
-            const rank = kpiRank.find(r => r.person === p.person);
             const isKing = kingPerson && p.person === kingPerson;
             const isGay = kingPerson && p.person !== kingPerson;
             return (
@@ -276,7 +265,7 @@ export default function CRM() {
                   {p.dmTarget?.active && <span style={{ fontSize: 11, color: "#3B82F6" }}>{p.weeklyDMs} DMs</span>}
                   {p.loomTarget?.active && <span style={{ fontSize: 11, color: "#EC4899" }}>{p.weeklyLooms} Looms</span>}
                   {p.dmStreak > 0 && <span style={{ fontSize: 11, color: "#F59E0B" }}>🔥 {p.dmStreak}d streak</span>}
-                  <span style={{ fontSize: 11, color: rank?.daysHit > 0 ? "#10B981" : "#475569" }}>KPIs hit: {rank?.daysHit || 0}/{daysSoFar}d</span>
+                  <span style={{ fontSize: 11, color: p.daysHit > 0 ? "#10B981" : "#475569" }}>KPIs hit: {p.daysHit || 0}/{p.daysSoFar}d</span>
                 </div>
               </div>
               <div style={{ textAlign: "right" }}>
