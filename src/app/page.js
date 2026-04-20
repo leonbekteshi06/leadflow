@@ -135,8 +135,10 @@ export default function CRM() {
     if (existing) {
       const nc = Math.max(0, (existing.count || 0) + delta);
       await supabase.from("kpi_entries").update({ count: nc, updated_at: new Date().toISOString() }).eq("id", existing.id);
+      setKpiEntries(prev => prev.map(e => e.id === existing.id ? { ...e, count: nc } : e));
     } else if (delta > 0) {
-      await supabase.from("kpi_entries").insert({ person, category, count: delta, date });
+      const { data } = await supabase.from("kpi_entries").insert({ person, category, count: delta, date }).select();
+      if (data) setKpiEntries(prev => [...prev, ...data]);
     }
     if (delta > 0) logActivity(person, "logged_kpi", `+${delta} ${category}`);
   };
