@@ -17,9 +17,11 @@ const STAGES = [
 const KPI_COLORS = { DMs: "#3B82F6", Looms: "#EC4899" };
 
 const todayStr = () => new Date().toISOString().split("T")[0];
+const yesterdayStr = () => addDays(todayStr(), -1);
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x.toISOString().split("T")[0]; };
 const daysDiff = (a, b) => { const d1 = new Date(a); d1.setHours(0,0,0,0); const d2 = new Date(b); d2.setHours(0,0,0,0); return Math.floor((d2-d1)/86400000); };
 const fmtEU = (d) => { if(!d) return ""; const x = new Date(d); return `${String(x.getDate()).padStart(2,"0")}.${String(x.getMonth()+1).padStart(2,"0")}.${x.getFullYear()}`; };
+const fmtDayName = (d) => { const x = new Date(d); return x.toLocaleDateString("en-US", { weekday: "long" }); };
 const weekStart = () => { const d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate()-d.getDay()+1); return d.toISOString().split("T")[0]; };
 const monthStart = () => { const d = new Date(); d.setHours(0,0,0,0); d.setDate(1); return d.toISOString().split("T")[0]; };
 const fmtMoney = (v) => new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}).format(v||0);
@@ -38,6 +40,8 @@ export default function CRM() {
   const [kpiTargets, setKpiTargets] = useState([]);
   const [kpiEntries, setKpiEntries] = useState([]);
   const [activityLog, setActivityLog] = useState([]);
+  const [allKpiEntries, setAllKpiEntries] = useState([]);
+  const [allActivityLog, setAllActivityLog] = useState([]);
   const [user, setUser] = useState(() => { if (typeof window !== "undefined") return localStorage.getItem("lf-user") || "Leon"; return "Leon"; });
   const [view, setView] = useState("dashboard");
   const [modal, setModal] = useState(null);
@@ -59,18 +63,22 @@ export default function CRM() {
 
   useEffect(() => {
     const load = async () => {
-      const [cRes, mRes, ktRes, keRes, alRes] = await Promise.all([
+      const [cRes, mRes, ktRes, keRes, alRes, allKeRes, allAlRes] = await Promise.all([
         supabase.from("contacts").select("*").order("created_at", { ascending: false }),
         supabase.from("message_templates").select("*").order("step"),
         supabase.from("kpi_targets").select("*"),
         supabase.from("kpi_entries").select("*").gte("date", addDays(todayStr(), -30)),
         supabase.from("activity_log").select("*").order("created_at", { ascending: false }).limit(50),
+        supabase.from("kpi_entries").select("*").gte("date", addDays(todayStr(), -400)),
+        supabase.from("activity_log").select("*").gte("created_at", addDays(todayStr(), -400)).order("created_at", { ascending: false }),
       ]);
       if (cRes.data) setContacts(cRes.data);
       if (mRes.data) { setMessages(mRes.data.filter(m => m.type === "outreach")); setNurtureM(mRes.data.filter(m => m.type === "nurture")); }
       if (ktRes.data) setKpiTargets(ktRes.data);
       if (keRes.data) setKpiEntries(keRes.data);
       if (alRes.data) setActivityLog(alRes.data);
+      if (allKeRes.data) setAllKpiEntries(allKeRes.data);
+      if (allAlRes.data) setAllActivityLog(allAlRes.data);
       setLoading(false);
     };
     load();
@@ -79,8 +87,14 @@ export default function CRM() {
       supabase.channel("c-ch").on("postgres_changes", { event: "*", schema: "public", table: "contacts" }, () => { supabase.from("contacts").select("*").order("created_at", { ascending: false }).then(({ data }) => { if (data) setContacts(data); }); }).subscribe(),
       supabase.channel("m-ch").on("postgres_changes", { event: "*", schema: "public", table: "message_templates" }, () => { supabase.from("message_templates").select("*").order("step").then(({ data }) => { if (data) { setMessages(data.filter(m => m.type === "outreach")); setNurtureM(data.filter(m => m.type === "nurture")); } }); }).subscribe(),
       supabase.channel("kt-ch").on("postgres_changes", { event: "*", schema: "public", table: "kpi_targets" }, () => { supabase.from("kpi_targets").select("*").then(({ data }) => { if (data) setKpiTargets(data); }); }).subscribe(),
-      supabase.channel("ke-ch").on("postgres_changes", { event: "*", schema: "public", table: "kpi_entries" }, () => { supabase.from("kpi_entries").select("*").gte("date", addDays(todayStr(), -30)).then(({ data }) => { if (data) setKpiEntries(data); }); }).subscribe(),
-      supabase.channel("al-ch").on("postgres_changes", { event: "*", schema: "public", table: "activity_log" }, () => { supabase.from("activity_log").select("*").order("created_at", { ascending: false }).limit(50).then(({ data }) => { if (data) setActivityLog(data); }); }).subscribe(),
+      supabase.channel("ke-ch").on("postgres_changes", { event: "*", schema: "public", table: "kpi_entries" }, () => {
+        supabase.from("kpi_entries").select("*").gte("date", addDays(todayStr(), -30)).then(({ data }) => { if (data) setKpiEntries(data); });
+        supabase.from("kpi_entries").select("*").gte("date", addDays(todayStr(), -400)).then(({ data }) => { if (data) setAllKpiEntries(data); });
+      }).subscribe(),
+      supabase.channel("al-ch").on("postgres_changes", { event: "*", schema: "public", table: "activity_log" }, () => {
+        supabase.from("activity_log").select("*").order("created_at", { ascending: false }).limit(50).then(({ data }) => { if (data) setActivityLog(data); });
+        supabase.from("activity_log").select("*").gte("created_at", addDays(todayStr(), -400)).order("created_at", { ascending: false }).then(({ data }) => { if (data) setAllActivityLog(data); });
+      }).subscribe(),
     ];
     return () => subs.forEach(s => supabase.removeChannel(s));
   }, []);
@@ -152,6 +166,58 @@ export default function CRM() {
   const copy = async (c, type) => { const msg = type === "nurture" ? getNextN(c) : getNext(c); if (!msg) return; const vs = msg.variants || [{ label: "A", body: msg.body }]; const pick = vs[Math.floor(Math.random() * vs.length)]; try { await navigator.clipboard.writeText(pick.body); setCopied(c.id + type); setTimeout(() => setCopied(null), 2e3); setPendingVariants(p => ({ ...p, [c.id]: { label: pick.label, msg: msg.name } })); flash(`Copied Version ${pick.label}!`); } catch { flash("Couldn't copy", "error"); } };
   const importCSV = async (text, seq) => { const lines = text.trim().split("\n"); if (lines.length < 2) return flash("No data", "error"); const hdr = lines[0].split(",").map(h => h.trim().toLowerCase().replace(/['"]/g, "")); const mp = {}; hdr.forEach((h, i) => { if (h === "first name") mp.firstName = i; else if (h === "last name") mp.lastName = i; else if (h === "name" || h === "full name") mp.name = i; else if (h === "company name" || h === "company") mp.company = i; else if (h === "title" || h === "job title" || h === "position") mp.title = i; else if (h === "email" || h === "email address") mp.email = i; else if (h === "person linkedin url" || h === "linkedin" || h === "linkedin url") mp.linkedin = i; else if (h.includes("instagram") || h === "ig") mp.ig = i; else if (h === "website" || h === "company website" || h === "url" || h === "site") mp.website = i; else if (h.includes("youtube") || h === "yt") mp.youtube = i; else if (h === "notes" || h === "note") mp.notes = i; else if (h.includes("value") || h.includes("deal") || h === "pipeline") mp.pv = i; else if (h === "assigned to" || h === "owner") mp.assign = i; }); const hasName = mp.name !== undefined || mp.firstName !== undefined; if (!hasName) return flash("Need a 'Name' or 'First Name' column", "error"); const rows = []; let skipped = 0; for (let i = 1; i < lines.length; i++) { const v = []; let inQ = false; let cur = ""; for (let j = 0; j < lines[i].length; j++) { const ch = lines[i][j]; if (ch === '"') { inQ = !inQ; } else if (ch === ',' && !inQ) { v.push(cur.trim()); cur = ""; } else { cur += ch; } } v.push(cur.trim()); let nm = ""; if (mp.firstName !== undefined) { nm = `${v[mp.firstName] || ""} ${v[mp.lastName] || ""}`.trim(); } else { nm = v[mp.name] || ""; } if (!nm) continue; const email = v[mp.email] || ""; const title = v[mp.title] || ""; const company = v[mp.company] || ""; const linkedin = v[mp.linkedin] || ""; const ig = v[mp.ig] || ""; const youtube = v[mp.youtube] || ""; const dup = findDuplicate({ email, ig, linkedin, youtube }); if (dup) { skipped++; continue; } const np = []; if (title) np.push(title); if (v[mp.notes]) np.push(v[mp.notes]); rows.push({ name: nm, company: company || "", ig: ig, email: email, youtube: youtube, website: v[mp.website] || "", linkedin: linkedin || "", notes: np.join(" ") || "", stage: "new", current_step: 0, nurture_step: 0, created_at: todayStr(), next_follow_up: todayStr(), pipeline_value: parseFloat(v[mp.pv]) || 0, assigned_to: "", outreach_sequence: seq || "Default", nurture_sequence: "Default", history: [], nurture_history: [] }); } if (rows.length > 0) { const { error } = await supabase.from("contacts").insert(rows); if (!error) { flash(`Imported ${rows.length} leads${skipped > 0 ? ` (${skipped} duplicates skipped)` : ""}!`); logActivity(user, "imported_csv", `${rows.length} leads`); } else flash("Import error", "error"); } else if (skipped > 0) { flash(`All ${skipped} leads already exist`, "error"); } setModal(null); };
 
+  // === STANDUP FEED DATA (Yesterday's recap) ===
+  const getYesterdayRecap = () => {
+    const y = yesterdayStr();
+    return TEAM.map(person => {
+      const dms = allKpiEntries.find(e => e.person === person && e.category === "DMs" && e.date === y)?.count || 0;
+      const looms = allKpiEntries.find(e => e.person === person && e.category === "Looms" && e.date === y)?.count || 0;
+      const dmTarget = getKpiTarget(person, "DMs");
+      const loomTarget = getKpiTarget(person, "Looms");
+      const dmHit = dmTarget?.active && dmTarget.daily_target > 0 ? dms >= dmTarget.daily_target : null;
+      const loomHit = loomTarget?.active && loomTarget.daily_target > 0 ? looms >= loomTarget.daily_target : null;
+
+      // Activity from log
+      const yLog = allActivityLog.filter(a => a.person === person && a.created_at.split("T")[0] === y);
+      const responses = contacts.filter(c => c.assigned_to === person && (c.history || []).some(h => h.at === y) && c.stage === "responded").length;
+      const closes = yLog.filter(a => a.action === "closed_deal");
+      const closedCount = closes.length;
+      const closedValue = closes.reduce((sum, a) => { const m = a.detail?.match(/\$([0-9,]+)/); return sum + (m ? parseInt(m[1].replace(/,/g, "")) : 0); }, 0);
+      const booked = yLog.filter(a => a.action === "moved_stage" && a.detail?.includes("Call Booked")).length;
+      const movedToResponded = yLog.filter(a => a.action === "moved_stage" && a.detail?.includes("Responded")).length;
+
+      const totalActivity = dms + looms + closedCount + booked + movedToResponded;
+
+      return { person, dms, looms, dmTarget, loomTarget, dmHit, loomHit, responses: movedToResponded, closedCount, closedValue, booked, totalActivity };
+    });
+  };
+
+  // === CALENDAR DATA ===
+  const getCalendarData = (year, person, metric) => {
+    // metric: "dms" | "looms" | "all" | "closed"
+    const data = {};
+    const start = `${year}-01-01`;
+    const end = `${year}-12-31`;
+
+    if (metric === "dms" || metric === "looms") {
+      const cat = metric === "dms" ? "DMs" : "Looms";
+      allKpiEntries
+        .filter(e => e.date >= start && e.date <= end && e.category === cat && (person === "all" || e.person === person))
+        .forEach(e => { data[e.date] = (data[e.date] || 0) + (e.count || 0); });
+    } else if (metric === "all") {
+      // Total team activity = DMs + Looms
+      allKpiEntries
+        .filter(e => e.date >= start && e.date <= end && (person === "all" || e.person === person))
+        .forEach(e => { data[e.date] = (data[e.date] || 0) + (e.count || 0); });
+    } else if (metric === "closed") {
+      // Count closes from contacts.closed_at
+      contacts
+        .filter(c => c.stage === "closed" && c.closed_at && c.closed_at >= start && c.closed_at <= end && (person === "all" || c.assigned_to === person))
+        .forEach(c => { data[c.closed_at] = (data[c.closed_at] || 0) + 1; });
+    }
+    return data;
+  };
+
   // Leaderboard data
   const getLeaderboard = () => {
     const ws = weekStart();
@@ -188,6 +254,7 @@ export default function CRM() {
   const NAV = [
     { id: "dashboard", label: "Dashboard", d: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1" },
     { id: "kpis", label: "KPIs", d: "M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" },
+    { id: "activity", label: "Activity", d: "M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" },
     { id: "finder", label: "Lead Finder", d: "M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" },
     { id: "myleads", label: "My Leads", d: "M5.121 17.804A13.937 13.937 0 0112 16c2.5 0 4.847.655 6.879 1.804M15 10a3 3 0 11-6 0 3 3 0 016 0zm6 2a9 9 0 11-18 0 9 9 0 0118 0z", badge: myActionsDue.length || null },
     { id: "contacts", label: "All Leads", d: "M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" },
@@ -197,6 +264,332 @@ export default function CRM() {
 
   // === SHARED COMPONENTS ===
   const ProgressBar = ({ value, max, color, h = 8 }) => { const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0; return (<div style={{ width: "100%", height: h, background: "#1E293B", borderRadius: h / 2, overflow: "hidden" }}><div style={{ width: `${pct}%`, height: "100%", background: pct >= 100 ? "#10B981" : color, borderRadius: h / 2, transition: "width 0.3s" }} /></div>); };
+
+  // === STANDUP FEED ===
+  const StandupFeed = () => {
+    const recap = getYesterdayRecap();
+    const yDate = yesterdayStr();
+    const dayName = fmtDayName(yDate);
+    const totalDMs = recap.reduce((s, r) => s + r.dms, 0);
+    const totalLooms = recap.reduce((s, r) => s + r.looms, 0);
+    const totalClosed = recap.reduce((s, r) => s + r.closedValue, 0);
+    const totalBooked = recap.reduce((s, r) => s + r.booked, 0);
+    const noActivity = totalDMs + totalLooms + totalClosed + totalBooked === 0;
+
+    return (
+      <div style={{ marginBottom: 20, background: "linear-gradient(135deg, #0F172A 0%, #1E1B4B 100%)", borderRadius: 12, border: "1px solid #3B82F640", padding: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+              <span style={{ fontSize: 18 }}>☀️</span>
+              <h2 style={{ ...S.h2, margin: 0, color: "#F1F5F9" }}>Yesterday&apos;s Standup</h2>
+            </div>
+            <div style={{ color: "#94A3B8", fontSize: 11 }}>{dayName}, {fmtEU(yDate)}</div>
+          </div>
+          {!noActivity && (
+            <div style={{ display: "flex", gap: 12 }}>
+              <div style={{ textAlign: "right" }}><div style={{ fontSize: 9, color: "#64748B", fontWeight: 700, textTransform: "uppercase" }}>Team DMs</div><div style={{ fontSize: 18, fontWeight: 700, color: "#3B82F6", fontFamily: "'Outfit',sans-serif" }}>{totalDMs}</div></div>
+              <div style={{ textAlign: "right" }}><div style={{ fontSize: 9, color: "#64748B", fontWeight: 700, textTransform: "uppercase" }}>Looms</div><div style={{ fontSize: 18, fontWeight: 700, color: "#EC4899", fontFamily: "'Outfit',sans-serif" }}>{totalLooms}</div></div>
+              {totalBooked > 0 && <div style={{ textAlign: "right" }}><div style={{ fontSize: 9, color: "#64748B", fontWeight: 700, textTransform: "uppercase" }}>Booked</div><div style={{ fontSize: 18, fontWeight: 700, color: "#F59E0B", fontFamily: "'Outfit',sans-serif" }}>{totalBooked}</div></div>}
+              {totalClosed > 0 && <div style={{ textAlign: "right" }}><div style={{ fontSize: 9, color: "#64748B", fontWeight: 700, textTransform: "uppercase" }}>Closed</div><div style={{ fontSize: 18, fontWeight: 700, color: "#10B981", fontFamily: "'Outfit',sans-serif" }}>{fmtMoney(totalClosed)}</div></div>}
+            </div>
+          )}
+        </div>
+
+        {noActivity ? (
+          <div style={{ padding: 16, background: "#0B112080", borderRadius: 8, textAlign: "center" }}>
+            <div style={{ fontSize: 24, marginBottom: 4 }}>😴</div>
+            <div style={{ color: "#94A3B8", fontSize: 13, fontWeight: 600 }}>No activity logged yesterday</div>
+            <div style={{ color: "#64748B", fontSize: 11, marginTop: 2 }}>Time to change that today.</div>
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+            {recap.map(r => {
+              const hasActivity = r.dms + r.looms + r.closedCount + r.booked + r.responses > 0;
+              const allTargetsHit = (r.dmHit !== false) && (r.loomHit !== false) && (r.dmHit === true || r.loomHit === true);
+              const missedTargets = r.dmHit === false || r.loomHit === false;
+              const isMVP = r.closedValue > 0 || (r.dms + r.looms === Math.max(...recap.map(x => x.dms + x.looms)) && r.dms + r.looms > 0);
+
+              return (
+                <div key={r.person} style={{
+                  padding: 12,
+                  background: "#0B1120",
+                  borderRadius: 10,
+                  border: `1px solid ${isMVP ? "#10B98140" : missedTargets ? "#EF444430" : "#1E293B"}`,
+                  borderTop: `3px solid ${isMVP ? "#10B981" : missedTargets ? "#EF4444" : !hasActivity ? "#EF4444" : "#3B82F6"}`
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                      <span style={{ color: "#F1F5F9", fontWeight: 700, fontSize: 14 }}>{r.person}</span>
+                      {r.person === user && <span style={{ color: "#3B82F6", fontSize: 9 }}>(you)</span>}
+                    </div>
+                    {isMVP && <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4, background: "#10B98120", color: "#10B981" }}>⭐ MVP</span>}
+                    {!hasActivity && <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4, background: "#EF444420", color: "#EF4444" }}>💤 Quiet</span>}
+                    {missedTargets && hasActivity && <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4, background: "#F59E0B20", color: "#F59E0B" }}>⚠ Below KPI</span>}
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {r.dmTarget?.active && (
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11 }}>
+                        <span style={{ color: "#94A3B8" }}>📨 DMs</span>
+                        <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <span style={{ color: "#F1F5F9", fontWeight: 600 }}>{r.dms}</span>
+                          {r.dmTarget.daily_target > 0 && <span style={{ color: "#475569", fontSize: 10 }}>/{r.dmTarget.daily_target}</span>}
+                          {r.dmHit === true && <span style={{ color: "#10B981" }}>✓</span>}
+                          {r.dmHit === false && <span style={{ color: "#EF4444" }}>✕</span>}
+                        </span>
+                      </div>
+                    )}
+                    {r.loomTarget?.active && (
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11 }}>
+                        <span style={{ color: "#94A3B8" }}>🎥 Looms</span>
+                        <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <span style={{ color: "#F1F5F9", fontWeight: 600 }}>{r.looms}</span>
+                          {r.loomTarget.daily_target > 0 && <span style={{ color: "#475569", fontSize: 10 }}>/{r.loomTarget.daily_target}</span>}
+                          {r.loomHit === true && <span style={{ color: "#10B981" }}>✓</span>}
+                          {r.loomHit === false && <span style={{ color: "#EF4444" }}>✕</span>}
+                        </span>
+                      </div>
+                    )}
+                    {r.responses > 0 && (
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+                        <span style={{ color: "#94A3B8" }}>💬 Replies</span>
+                        <span style={{ color: "#8B5CF6", fontWeight: 600 }}>{r.responses}</span>
+                      </div>
+                    )}
+                    {r.booked > 0 && (
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+                        <span style={{ color: "#94A3B8" }}>📞 Booked</span>
+                        <span style={{ color: "#F59E0B", fontWeight: 600 }}>{r.booked}</span>
+                      </div>
+                    )}
+                    {r.closedCount > 0 && (
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, padding: "4px 8px", background: "#10B98115", borderRadius: 6, marginTop: 2 }}>
+                        <span style={{ color: "#10B981", fontWeight: 600 }}>🎉 Closed</span>
+                        <span style={{ color: "#10B981", fontWeight: 700 }}>{fmtMoney(r.closedValue)}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // === ACTIVITY CALENDAR (GitHub-style heatmap) ===
+  const ActivityView = () => {
+    const [year, setYear] = useState(new Date().getFullYear());
+    const [selPerson, setSelPerson] = useState("all");
+    const [metric, setMetric] = useState("all");
+    const [hovered, setHovered] = useState(null);
+
+    const data = getCalendarData(year, selPerson, metric);
+    const yearStart = new Date(year, 0, 1);
+    const yearEnd = new Date(year, 11, 31);
+
+    // Find max for color scaling
+    const values = Object.values(data);
+    const maxVal = values.length > 0 ? Math.max(...values) : 0;
+
+    // Build grid: 53 weeks x 7 days
+    const firstDay = new Date(yearStart);
+    firstDay.setDate(firstDay.getDate() - firstDay.getDay()); // Start on Sunday
+    const weeks = [];
+    let current = new Date(firstDay);
+    for (let w = 0; w < 53; w++) {
+      const week = [];
+      for (let d = 0; d < 7; d++) {
+        const dateStr = current.toISOString().split("T")[0];
+        const inYear = current >= yearStart && current <= yearEnd;
+        week.push({ date: dateStr, value: data[dateStr] || 0, inYear, isToday: dateStr === todayStr() });
+        current.setDate(current.getDate() + 1);
+      }
+      weeks.push(week);
+    }
+
+    const getColor = (val, inYear) => {
+      if (!inYear) return "transparent";
+      if (val === 0) return "#1E293B";
+      const baseColor = metric === "looms" ? [236, 72, 153] : metric === "closed" ? [16, 185, 129] : [59, 130, 246];
+      const intensity = maxVal > 0 ? val / maxVal : 0;
+      const tier = intensity < 0.25 ? 0.25 : intensity < 0.5 ? 0.5 : intensity < 0.75 ? 0.75 : 1;
+      return `rgba(${baseColor[0]}, ${baseColor[1]}, ${baseColor[2]}, ${tier})`;
+    };
+
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const dayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+    // Calculate month positions
+    const monthPositions = months.map((m, i) => {
+      const firstOfMonth = new Date(year, i, 1);
+      let weekIdx = 0;
+      for (let w = 0; w < weeks.length; w++) {
+        if (weeks[w].some(d => d.date === firstOfMonth.toISOString().split("T")[0])) { weekIdx = w; break; }
+      }
+      return { name: m, weekIdx };
+    });
+
+    // Stats
+    const totalForYear = values.reduce((s, v) => s + v, 0);
+    const activeDays = values.filter(v => v > 0).length;
+    const bestDay = values.length > 0 ? Math.max(...values) : 0;
+    const bestDayDate = Object.entries(data).find(([d, v]) => v === bestDay)?.[0];
+
+    // Monthly breakdown
+    const monthlyTotals = months.map((m, i) => {
+      const monthStartStr = `${year}-${String(i + 1).padStart(2, "0")}-01`;
+      const nextMonth = i === 11 ? `${year + 1}-01-01` : `${year}-${String(i + 2).padStart(2, "0")}-01`;
+      const total = Object.entries(data).filter(([d]) => d >= monthStartStr && d < nextMonth).reduce((s, [, v]) => s + v, 0);
+      return { name: m, total };
+    });
+
+    const metricLabels = { all: "All Activity (DMs + Looms)", dms: "DMs Only", looms: "Looms Only", closed: "Deals Closed" };
+    const years = [];
+    const cy = new Date().getFullYear();
+    for (let y = cy; y >= cy - 3; y--) years.push(y);
+
+    return (
+      <div style={S.content}>
+        <div style={S.header}>
+          <div>
+            <h1 style={S.h1}>Activity Calendar</h1>
+            <p style={S.sub}>See your team&apos;s output across the year</p>
+          </div>
+        </div>
+
+        {/* Filters */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 16, padding: 12, background: "#0F172A", borderRadius: 10, border: "1px solid #1E293B" }}>
+          <div>
+            <div style={{ ...S.lb, marginBottom: 5 }}>Person</div>
+            <div style={{ display: "flex", gap: 4 }}>
+              <button style={{ ...S.pill, ...(selPerson === "all" ? S.pillOn : {}) }} onClick={() => setSelPerson("all")}>Whole Team</button>
+              {TEAM.map(p => <button key={p} style={{ ...S.pill, ...(selPerson === p ? S.pillOn : {}) }} onClick={() => setSelPerson(p)}>{p}</button>)}
+            </div>
+          </div>
+          <div>
+            <div style={{ ...S.lb, marginBottom: 5 }}>Metric</div>
+            <div style={{ display: "flex", gap: 4 }}>
+              <button style={{ ...S.pill, ...(metric === "all" ? S.pillOn : {}) }} onClick={() => setMetric("all")}>All Activity</button>
+              <button style={{ ...S.pill, ...(metric === "dms" ? S.pillOn : {}) }} onClick={() => setMetric("dms")}>📨 DMs</button>
+              <button style={{ ...S.pill, ...(metric === "looms" ? S.pillOn : {}) }} onClick={() => setMetric("looms")}>🎥 Looms</button>
+              <button style={{ ...S.pill, ...(metric === "closed" ? S.pillOn : {}) }} onClick={() => setMetric("closed")}>🎉 Closed</button>
+            </div>
+          </div>
+          <div>
+            <div style={{ ...S.lb, marginBottom: 5 }}>Year</div>
+            <div style={{ display: "flex", gap: 4 }}>
+              {years.map(y => <button key={y} style={{ ...S.pill, ...(year === y ? S.pillOn : {}) }} onClick={() => setYear(y)}>{y}</button>)}
+            </div>
+          </div>
+        </div>
+
+        {/* Year stats */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8, marginBottom: 16 }}>
+          <div style={{ padding: 12, background: "#0F172A", borderRadius: 10, border: "1px solid #1E293B", borderTop: "3px solid #3B82F6" }}>
+            <div style={{ color: "#64748B", fontSize: 10, fontWeight: 600, textTransform: "uppercase" }}>{metricLabels[metric]} ({year})</div>
+            <div style={{ color: "#F1F5F9", fontSize: 22, fontWeight: 700, fontFamily: "'Outfit',sans-serif", marginTop: 3 }}>{totalForYear.toLocaleString()}</div>
+          </div>
+          <div style={{ padding: 12, background: "#0F172A", borderRadius: 10, border: "1px solid #1E293B", borderTop: "3px solid #10B981" }}>
+            <div style={{ color: "#64748B", fontSize: 10, fontWeight: 600, textTransform: "uppercase" }}>Active Days</div>
+            <div style={{ color: "#F1F5F9", fontSize: 22, fontWeight: 700, fontFamily: "'Outfit',sans-serif", marginTop: 3 }}>{activeDays}</div>
+          </div>
+          <div style={{ padding: 12, background: "#0F172A", borderRadius: 10, border: "1px solid #1E293B", borderTop: "3px solid #F59E0B" }}>
+            <div style={{ color: "#64748B", fontSize: 10, fontWeight: 600, textTransform: "uppercase" }}>Best Day</div>
+            <div style={{ color: "#F1F5F9", fontSize: 22, fontWeight: 700, fontFamily: "'Outfit',sans-serif", marginTop: 3 }}>{bestDay}</div>
+            {bestDayDate && <div style={{ color: "#64748B", fontSize: 10 }}>{fmtEU(bestDayDate)}</div>}
+          </div>
+          <div style={{ padding: 12, background: "#0F172A", borderRadius: 10, border: "1px solid #1E293B", borderTop: "3px solid #8B5CF6" }}>
+            <div style={{ color: "#64748B", fontSize: 10, fontWeight: 600, textTransform: "uppercase" }}>Daily Average</div>
+            <div style={{ color: "#F1F5F9", fontSize: 22, fontWeight: 700, fontFamily: "'Outfit',sans-serif", marginTop: 3 }}>{activeDays > 0 ? Math.round(totalForYear / activeDays) : 0}</div>
+            <div style={{ color: "#64748B", fontSize: 10 }}>per active day</div>
+          </div>
+        </div>
+
+        {/* Heatmap */}
+        <div style={{ background: "#0F172A", borderRadius: 12, border: "1px solid #1E293B", padding: 16, marginBottom: 16, overflowX: "auto" }}>
+          <div style={{ display: "flex", flexDirection: "column", minWidth: 750 }}>
+            {/* Month labels */}
+            <div style={{ display: "flex", marginLeft: 30, marginBottom: 4, position: "relative", height: 14 }}>
+              {monthPositions.map(({ name, weekIdx }) => (
+                <div key={name} style={{ position: "absolute", left: weekIdx * 14, color: "#64748B", fontSize: 10, fontWeight: 600 }}>{name}</div>
+              ))}
+            </div>
+
+            {/* Grid */}
+            <div style={{ display: "flex" }}>
+              {/* Day labels */}
+              <div style={{ display: "flex", flexDirection: "column", marginRight: 4, gap: 2 }}>
+                {dayLabels.map((d, i) => (
+                  <div key={d} style={{ height: 12, fontSize: 9, color: "#64748B", display: "flex", alignItems: "center", visibility: i % 2 === 1 ? "visible" : "hidden" }}>{d}</div>
+                ))}
+              </div>
+
+              {/* Weeks */}
+              <div style={{ display: "flex", gap: 2 }}>
+                {weeks.map((week, wi) => (
+                  <div key={wi} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    {week.map((day, di) => (
+                      <div
+                        key={day.date}
+                        onMouseEnter={() => day.inYear && setHovered(day)}
+                        onMouseLeave={() => setHovered(null)}
+                        style={{
+                          width: 12, height: 12, borderRadius: 2,
+                          background: getColor(day.value, day.inYear),
+                          border: day.isToday ? "1px solid #F59E0B" : "1px solid transparent",
+                          cursor: day.inYear ? "pointer" : "default",
+                          transition: "transform 0.1s",
+                          transform: hovered?.date === day.date ? "scale(1.3)" : "scale(1)"
+                        }}
+                      />
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Legend */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6, marginTop: 12 }}>
+              <span style={{ color: "#64748B", fontSize: 10 }}>Less</span>
+              {[0, 0.25, 0.5, 0.75, 1].map((tier, i) => {
+                const baseColor = metric === "looms" ? [236, 72, 153] : metric === "closed" ? [16, 185, 129] : [59, 130, 246];
+                return <div key={i} style={{ width: 12, height: 12, borderRadius: 2, background: tier === 0 ? "#1E293B" : `rgba(${baseColor[0]}, ${baseColor[1]}, ${baseColor[2]}, ${tier})` }} />;
+              })}
+              <span style={{ color: "#64748B", fontSize: 10 }}>More</span>
+            </div>
+          </div>
+
+          {/* Hover tooltip */}
+          {hovered && (
+            <div style={{ marginTop: 12, padding: "8px 12px", background: "#0B1120", borderRadius: 8, border: "1px solid #334155", display: "inline-block" }}>
+              <span style={{ color: "#F1F5F9", fontSize: 12, fontWeight: 600 }}>{hovered.value}</span>
+              <span style={{ color: "#94A3B8", fontSize: 12 }}> on {fmtDayName(hovered.date)}, {fmtEU(hovered.date)}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Monthly breakdown */}
+        <h2 style={S.h2}>Monthly Breakdown</h2>
+        <div style={{ background: "#0F172A", borderRadius: 12, border: "1px solid #1E293B", padding: 14 }}>
+          {(() => {
+            const maxMonth = Math.max(...monthlyTotals.map(m => m.total), 1);
+            return monthlyTotals.map(m => (
+              <div key={m.name} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                <span style={{ color: "#94A3B8", fontSize: 11, fontWeight: 600, width: 30 }}>{m.name}</span>
+                <div style={{ flex: 1, height: 18, background: "#0B1120", borderRadius: 4, overflow: "hidden", position: "relative" }}>
+                  <div style={{ width: `${(m.total / maxMonth) * 100}%`, height: "100%", background: metric === "looms" ? "linear-gradient(90deg, #EC489960, #EC4899)" : metric === "closed" ? "linear-gradient(90deg, #10B98160, #10B981)" : "linear-gradient(90deg, #3B82F660, #3B82F6)", borderRadius: 4, transition: "width 0.3s" }} />
+                </div>
+                <span style={{ color: "#F1F5F9", fontSize: 12, fontWeight: 700, fontFamily: "'Outfit',sans-serif", width: 50, textAlign: "right" }}>{m.total.toLocaleString()}</span>
+              </div>
+            ));
+          })()}
+        </div>
+      </div>
+    );
+  };
 
   const Row = ({ c, showWho }) => {
     const sd = getSendDate(c); const nd = getNurtureDate(c); const nm = getNext(c); const nn = getNextN(c); const stg = STAGES.find(s => s.id === c.stage);
@@ -416,9 +809,10 @@ export default function CRM() {
       </div>
 
       <div style={S.main}>
-        {view === "dashboard" && (<div style={S.content}><div style={S.header}><div><h1 style={S.h1}>Dashboard</h1><p style={S.sub}>Welcome back, {user}</p></div><button style={S.pri} onClick={() => setModal({ type: "contact", data: null })}>+ Add Lead</button></div><div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(145px,1fr))", gap: 8, marginBottom: 20 }}>{[{ l: "Contacted This Week", v: stats.contactedWeek, c: "#3B82F6" }, { l: "Contacted This Month", v: stats.contactedMonth, c: "#6366F1" }, { l: "Pipeline Value", v: fmtMoney(stats.pipeline), c: "#10B981" }, { l: "Closed This Month", v: fmtMoney(stats.closedMonth), c: "#F59E0B" }, { l: "Total Revenue", v: fmtMoney(stats.closedTotal), c: "#10B981" }, { l: "Close Rate", v: `${stats.convRate}%`, c: "#8B5CF6" }].map((s, i) => (<div key={i} style={{ padding: 12, background: "#0F172A", borderRadius: 10, border: "1px solid #1E293B", borderTop: `3px solid ${s.c}` }}><div style={{ color: "#64748B", fontSize: 10, fontWeight: 600, textTransform: "uppercase" }}>{s.l}</div><div style={{ color: "#F1F5F9", fontSize: 20, fontWeight: 700, fontFamily: "'Outfit',sans-serif", marginTop: 3 }}>{s.v}</div></div>))}</div><div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 6, marginBottom: 20 }}>{STAGES.map(s => { const cnt = contacts.filter(c => c.stage === s.id).length; return (<div key={s.id} style={{ padding: "12px 10px", background: "#0F172A", borderRadius: 8, border: "1px solid #1E293B", borderLeft: `3px solid ${s.color}`, cursor: "pointer" }} onClick={() => { setView("contacts"); setFilter(s.id); }}><div style={{ color: "#94A3B8", fontSize: 10, fontWeight: 600 }}>{s.label}</div><div style={{ color: "#F1F5F9", fontSize: 22, fontWeight: 700, fontFamily: "'Outfit',sans-serif" }}>{cnt}</div></div>); })}</div><h2 style={S.h2}>Today&apos;s Actions ({actionsDue.length})</h2>{actionsDue.length === 0 ? <div style={S.empty}><p style={{ color: "#64748B" }}>Nothing due!</p></div> : <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 20 }}>{actionsDue.sort((a, b) => urgency(a) - urgency(b)).map(c => { const isOver = urgency(c) < 0; const nm = getNext(c); const nn = getNextN(c); const isO = ["new", "outreach", "old"].includes(c.stage); const isLm = c.stage === "responded" && c.loom_pending; const msg = isLm ? null : isO ? nm : nn; const mt = isO ? "outreach" : "nurture"; return (<div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "#0F172A", borderRadius: 8, border: `1px solid ${isOver ? "#EF444430" : "#1E293B"}` }}><div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}><div style={{ width: 7, height: 7, borderRadius: "50%", background: isOver ? "#EF4444" : "#F59E0B", flexShrink: 0 }} /><div><div style={{ color: "#F1F5F9", fontWeight: 500, fontSize: 13 }}>{c.name} <span style={{ color: "#64748B", fontSize: 11 }}>({c.assigned_to})</span></div><div style={{ color: "#64748B", fontSize: 11 }}>{isLm ? "🎥 Send Loom" : c.stage === "interested" ? "💬 Check in" : msg ? msg.name : "Action needed"}</div></div></div><div style={{ display: "flex", gap: 4 }}>{msg && <button style={S.sc} onClick={() => copy(c, mt)}>{copied === c.id + mt ? "Copied!" : "Copy"}</button>}</div></div>); })}</div>}<h2 style={S.h2}>Team</h2><div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8 }}>{TEAM.map(t => { const ml = contacts.filter(c => c.assigned_to === t); const ma = actionsDue.filter(c => c.assigned_to === t); const mc = ml.filter(c => c.stage === "closed").reduce((s, c) => s + (c.closed_value || 0), 0); return (<div key={t} style={{ padding: 12, background: "#0F172A", borderRadius: 10, border: `1px solid ${t === user ? "#3B82F640" : "#1E293B"}` }}><div style={{ color: "#F1F5F9", fontWeight: 600, fontSize: 14, marginBottom: 6 }}>{t}{t === user && <span style={{ color: "#3B82F6", fontSize: 10 }}> (you)</span>}</div><div style={{ display: "flex", flexDirection: "column", gap: 3 }}><div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}><span style={{ color: "#64748B" }}>Leads</span><span style={{ color: "#CBD5E1", fontWeight: 600 }}>{ml.length}</span></div><div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}><span style={{ color: "#64748B" }}>Due Today</span><span style={{ color: ma.length ? "#F59E0B" : "#CBD5E1", fontWeight: 600 }}>{ma.length}</span></div><div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}><span style={{ color: "#64748B" }}>Closed</span><span style={{ color: "#10B981", fontWeight: 600 }}>{fmtMoney(mc)}</span></div></div></div>); })}</div></div>)}
+        {view === "dashboard" && (<div style={S.content}><div style={S.header}><div><h1 style={S.h1}>Dashboard</h1><p style={S.sub}>Welcome back, {user}</p></div><button style={S.pri} onClick={() => setModal({ type: "contact", data: null })}>+ Add Lead</button></div><StandupFeed /><div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(145px,1fr))", gap: 8, marginBottom: 20 }}>{[{ l: "Contacted This Week", v: stats.contactedWeek, c: "#3B82F6" }, { l: "Contacted This Month", v: stats.contactedMonth, c: "#6366F1" }, { l: "Pipeline Value", v: fmtMoney(stats.pipeline), c: "#10B981" }, { l: "Closed This Month", v: fmtMoney(stats.closedMonth), c: "#F59E0B" }, { l: "Total Revenue", v: fmtMoney(stats.closedTotal), c: "#10B981" }, { l: "Close Rate", v: `${stats.convRate}%`, c: "#8B5CF6" }].map((s, i) => (<div key={i} style={{ padding: 12, background: "#0F172A", borderRadius: 10, border: "1px solid #1E293B", borderTop: `3px solid ${s.c}` }}><div style={{ color: "#64748B", fontSize: 10, fontWeight: 600, textTransform: "uppercase" }}>{s.l}</div><div style={{ color: "#F1F5F9", fontSize: 20, fontWeight: 700, fontFamily: "'Outfit',sans-serif", marginTop: 3 }}>{s.v}</div></div>))}</div><div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 6, marginBottom: 20 }}>{STAGES.map(s => { const cnt = contacts.filter(c => c.stage === s.id).length; return (<div key={s.id} style={{ padding: "12px 10px", background: "#0F172A", borderRadius: 8, border: "1px solid #1E293B", borderLeft: `3px solid ${s.color}`, cursor: "pointer" }} onClick={() => { setView("contacts"); setFilter(s.id); }}><div style={{ color: "#94A3B8", fontSize: 10, fontWeight: 600 }}>{s.label}</div><div style={{ color: "#F1F5F9", fontSize: 22, fontWeight: 700, fontFamily: "'Outfit',sans-serif" }}>{cnt}</div></div>); })}</div><h2 style={S.h2}>Today&apos;s Actions ({actionsDue.length})</h2>{actionsDue.length === 0 ? <div style={S.empty}><p style={{ color: "#64748B" }}>Nothing due!</p></div> : <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 20 }}>{actionsDue.sort((a, b) => urgency(a) - urgency(b)).map(c => { const isOver = urgency(c) < 0; const nm = getNext(c); const nn = getNextN(c); const isO = ["new", "outreach", "old"].includes(c.stage); const isLm = c.stage === "responded" && c.loom_pending; const msg = isLm ? null : isO ? nm : nn; const mt = isO ? "outreach" : "nurture"; return (<div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "#0F172A", borderRadius: 8, border: `1px solid ${isOver ? "#EF444430" : "#1E293B"}` }}><div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}><div style={{ width: 7, height: 7, borderRadius: "50%", background: isOver ? "#EF4444" : "#F59E0B", flexShrink: 0 }} /><div><div style={{ color: "#F1F5F9", fontWeight: 500, fontSize: 13 }}>{c.name} <span style={{ color: "#64748B", fontSize: 11 }}>({c.assigned_to})</span></div><div style={{ color: "#64748B", fontSize: 11 }}>{isLm ? "🎥 Send Loom" : c.stage === "interested" ? "💬 Check in" : msg ? msg.name : "Action needed"}</div></div></div><div style={{ display: "flex", gap: 4 }}>{msg && <button style={S.sc} onClick={() => copy(c, mt)}>{copied === c.id + mt ? "Copied!" : "Copy"}</button>}</div></div>); })}</div>}<h2 style={S.h2}>Team</h2><div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8 }}>{TEAM.map(t => { const ml = contacts.filter(c => c.assigned_to === t); const ma = actionsDue.filter(c => c.assigned_to === t); const mc = ml.filter(c => c.stage === "closed").reduce((s, c) => s + (c.closed_value || 0), 0); return (<div key={t} style={{ padding: 12, background: "#0F172A", borderRadius: 10, border: `1px solid ${t === user ? "#3B82F640" : "#1E293B"}` }}><div style={{ color: "#F1F5F9", fontWeight: 600, fontSize: 14, marginBottom: 6 }}>{t}{t === user && <span style={{ color: "#3B82F6", fontSize: 10 }}> (you)</span>}</div><div style={{ display: "flex", flexDirection: "column", gap: 3 }}><div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}><span style={{ color: "#64748B" }}>Leads</span><span style={{ color: "#CBD5E1", fontWeight: 600 }}>{ml.length}</span></div><div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}><span style={{ color: "#64748B" }}>Due Today</span><span style={{ color: ma.length ? "#F59E0B" : "#CBD5E1", fontWeight: 600 }}>{ma.length}</span></div><div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}><span style={{ color: "#64748B" }}>Closed</span><span style={{ color: "#10B981", fontWeight: 600 }}>{fmtMoney(mc)}</span></div></div></div>); })}</div></div>)}
 
         {view === "kpis" && <KpiView />}
+        {view === "activity" && <ActivityView />}
         {view === "finder" && <LeadFinder />}
         {view === "myleads" && (() => { const my = contacts.filter(c => c.assigned_to === user); const unassigned = contacts.filter(c => !c.assigned_to && c.stage === "new"); const over = my.filter(c => urgency(c) < 0 && !["booked", "closed", "lost"].includes(c.stage)).sort((a, b) => urgency(a) - urgency(b)); const today2 = my.filter(c => urgency(c) === 0 && !["booked", "closed", "lost"].includes(c.stage)); const upcoming = my.filter(c => { const u2 = urgency(c); return u2 > 0 && u2 <= 7 && !["booked", "closed", "lost"].includes(c.stage); }).sort((a, b) => urgency(a) - urgency(b)); const interested = my.filter(c => c.stage === "interested"); const booked = my.filter(c => c.stage === "booked"); const closed = my.filter(c => c.stage === "closed"); const lost = my.filter(c => c.stage === "lost"); return (<div style={S.content}><div style={S.header}><div><h1 style={S.h1}>My Leads</h1><p style={S.sub}>{user}&apos;s leads and daily actions</p></div><button style={S.pri} onClick={() => setModal({ type: "contact", data: null })}>+ Add Lead</button></div>{over.length > 0 && <div style={{ marginBottom: 16 }}><h2 style={{ ...S.h2, color: "#EF4444" }}>Overdue ({over.length})</h2><Table data={over} /></div>}{today2.length > 0 && <div style={{ marginBottom: 16 }}><h2 style={{ ...S.h2, color: "#F59E0B" }}>Due Today ({today2.length})</h2><Table data={today2} /></div>}{upcoming.length > 0 && <div style={{ marginBottom: 16 }}><h2 style={{ ...S.h2, color: "#3B82F6" }}>Upcoming This Week ({upcoming.length})</h2><Table data={upcoming} /></div>}{interested.length > 0 && <div style={{ marginBottom: 16 }}><h2 style={{ ...S.h2, color: "#06B6D4" }}>💬 Interested ({interested.length})</h2><Table data={interested} /></div>}{booked.length > 0 && <div style={{ marginBottom: 16 }}><h2 style={{ ...S.h2, color: "#F59E0B" }}>📞 Calls Booked ({booked.length})</h2><Table data={booked} /></div>}{closed.length > 0 && <div style={{ marginBottom: 16 }}><h2 style={{ ...S.h2, color: "#10B981" }}>🎉 Closed Won ({closed.length})</h2><Table data={closed} /></div>}{lost.length > 0 && <div style={{ marginBottom: 16 }}><h2 style={{ ...S.h2, color: "#EF4444" }}>Lost ({lost.length})</h2><Table data={lost} /></div>}{unassigned.length > 0 && <div style={{ marginBottom: 16 }}><h2 style={{ ...S.h2, color: "#6C7A89" }}>Unassigned ({unassigned.length})</h2><p style={{ color: "#64748B", fontSize: 11, marginBottom: 8 }}>Send the first message to claim these leads</p><Table data={unassigned} showWho /></div>}{over.length === 0 && today2.length === 0 && upcoming.length === 0 && interested.length === 0 && booked.length === 0 && closed.length === 0 && unassigned.length === 0 && <div style={S.empty}><p style={{ color: "#64748B" }}>All caught up!</p></div>}{detailId && <Detail />}</div>); })()}
         {view === "contacts" && (<div style={S.content}><div style={S.header}><div><h1 style={S.h1}>All Leads</h1><p style={S.sub}>{filtered.length} lead{filtered.length !== 1 ? "s" : ""}</p></div><div style={{ display: "flex", gap: 6 }}>{selected.size > 0 && <button style={S.danger} onClick={bulkDelete}>Delete {selected.size} Selected</button>}<button style={S.ghost} onClick={() => setModal({ type: "csv" })}>📤 Import CSV</button><button style={S.pri} onClick={() => setModal({ type: "contact", data: null })}>+ Add Lead</button></div></div><div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}><div style={S.sBox}><input style={S.sInp} placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} /></div><div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}><button style={{ ...S.pill, ...(filter === "all" ? S.pillOn : {}) }} onClick={() => setFilter("all")}>All</button>{STAGES.map(s => <button key={s.id} style={{ ...S.pill, ...(filter === s.id ? S.pillOn : {}) }} onClick={() => setFilter(s.id)}>{s.label} <span style={{ opacity: .5 }}>{contacts.filter(c => c.stage === s.id).length}</span></button>)}</div></div>{filtered.length === 0 ? <div style={S.empty}><p style={{ color: "#64748B" }}>No leads found.</p></div> : <Table data={filtered} showWho />}{detailId && <Detail />}</div>)}
