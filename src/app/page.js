@@ -115,7 +115,7 @@ export default function CRM() {
   const deleteContact = async (id) => { const name = contacts.find(c => c.id === id)?.name; await supabase.from("contacts").delete().eq("id", id); setDelId(null); if (detailId === id) setDetailId(null); flash(`${name} removed`, "info"); };
   const bulkDelete = async () => { if (selected.size === 0) return; const ids = Array.from(selected); await supabase.from("contacts").delete().in("id", ids); setSelected(new Set()); flash(`Deleted ${ids.length} leads`, "info"); };
 
-  const markSent = async (id) => { const c = contacts.find(x => x.id === id); if (!c) return; const ns = (c.current_step || 0) + 1; const seq = c.outreach_sequence || "Default"; let seqMsgs = messages.filter(m => (m.sequence_name || "Default") === seq).sort((a, b) => a.step - b.step); if (seqMsgs.length === 0) seqMsgs = messages.filter(m => (m.sequence_name || "Default") === "Default").sort((a, b) => a.step - b.step); const cm = seqMsgs[c.current_step || 0]; const nm = seqMsgs[ns]; const pv = pendingVariants[id]; const variant = pv?.label || "A"; const isFirst = (c.current_step || 0) === 0; const isLoomSeq = seq.toLowerCase().includes("loom"); const kpiCat = isLoomSeq ? "Looms" : "DMs"; if (isFirst) { await logKpi(user, kpiCat, 1); } const upd = { current_step: ns, stage: ns > 0 && ["new", "old"].includes(c.stage) ? "outreach" : c.stage, last_contacted_at: todayStr(), next_follow_up: nm ? addDays(todayStr(), nm.delay_days) : null, history: [...(c.history || []), { step: ns, name: cm?.name || `Msg ${ns}`, variant, at: todayStr() }] }; if (isFirst || !c.assigned_to) upd.assigned_to = user; await updateContact(id, upd); setPendingVariants(p => { const n = { ...p }; delete n[id]; return n; }); logActivity(user, "sent_outreach", `${cm?.name} (v${variant}) to ${c.name}`); flash(isFirst ? `Marked sent! (+1 ${kpiCat})` : "Marked sent!"); };
+  const markSent = async (id) => { const c = contacts.find(x => x.id === id); if (!c) return; const ns = (c.current_step || 0) + 1; const seq = c.outreach_sequence || "Default"; let seqMsgs = messages.filter(m => (m.sequence_name || "Default") === seq).sort((a, b) => a.step - b.step); if (seqMsgs.length === 0) seqMsgs = messages.filter(m => (m.sequence_name || "Default") === "Default").sort((a, b) => a.step - b.step); const cm = seqMsgs[c.current_step || 0]; const nm = seqMsgs[ns]; const pv = pendingVariants[id]; const variant = pv?.label || "A"; const isFirst = (c.current_step || 0) === 0; const isLoomSeq = seq.toLowerCase().includes("loom"); const kpiCat = isLoomSeq ? "Looms" : "DMs"; if (isFirst) { await logKpi(user, kpiCat, 1); } const upd = { current_step: ns, stage: ns > 0 && ["new", "old"].includes(c.stage) ? "outreach" : c.stage, last_contacted_at: todayStr(), next_follow_up: nm ? addDays(todayStr(), nm.delay_days) : null, history: [...(c.history || []), { step: ns, name: cm?.name || `Msg ${ns}`, variant, at: todayStr() }] }; if (isFirst || !c.assigned_to) upd.assigned_to = user; if (isFirst && !c.original_owner) { upd.original_owner = user; if (!c.cycle) upd.cycle = 1; } await updateContact(id, upd); setPendingVariants(p => { const n = { ...p }; delete n[id]; return n; }); logActivity(user, "sent_outreach", `${cm?.name} (v${variant}) to ${c.name}${c.cycle > 1 ? ` (cycle ${c.cycle})` : ""}`); flash(isFirst ? `Marked sent! (+1 ${kpiCat})` : "Marked sent!"); };
   const markNurtureSent = async (id) => { const c = contacts.find(x => x.id === id); if (!c) return; const ns = (c.nurture_step || 0) + 1; const seq = c.nurture_sequence || "Default"; let seqMsgs = nurtureM.filter(m => (m.sequence_name || "Default") === seq).sort((a, b) => a.step - b.step); if (seqMsgs.length === 0) seqMsgs = nurtureM.filter(m => (m.sequence_name || "Default") === "Default").sort((a, b) => a.step - b.step); const cm = seqMsgs[c.nurture_step || 0]; const nm = seqMsgs[ns]; await updateContact(id, { nurture_step: ns, last_contacted_at: todayStr(), next_nurture_date: nm ? addDays(todayStr(), nm.delay_days) : addDays(todayStr(), 7), nurture_history: [...(c.nurture_history || []), { step: ns, name: cm?.name || `N ${ns}`, at: todayStr() }] }); logActivity(user, "sent_nurture", `${cm?.name} to ${c.name}`); flash("Nurture sent!"); };
   const moveStage = async (id, stage) => { const c = contacts.find(x => x.id === id); const u = { stage }; if (stage === "responded") { u.loom_pending = true; u.next_follow_up = todayStr(); u.next_nurture_date = null; u.nurture_step = 0; } if (stage === "interested") { u.next_follow_up = addDays(todayStr(), 3); u.next_nurture_date = null; u.loom_pending = false; } if (["booked", "closed", "lost", "not_interested"].includes(stage)) { u.next_follow_up = null; u.next_nurture_date = null; u.loom_pending = false; } if (stage === "old") { u.next_follow_up = addDays(todayStr(), 75); u.next_nurture_date = null; u.loom_pending = false; } await updateContact(id, u); logActivity(user, "moved_stage", `${c?.name} to ${STAGES.find(s => s.id === stage)?.label}`); flash(`Moved to ${STAGES.find(s => s.id === stage)?.label}`); };
   const pingLead = async (id) => { const c = contacts.find(x => x.id === id); if (!c) return; await updateContact(id, { next_follow_up: addDays(todayStr(), 3), last_contacted_at: todayStr() }); logActivity(user, "pinged_lead", c.name); flash(`Pinged! Check in again in 3 days.`); };
@@ -257,6 +257,105 @@ export default function CRM() {
       autoAwardPastWeeks();
     }
   }, [loading, allKpiEntries.length, kpiTargets.length, victories.length]);
+
+  // === LEAD RECYCLING SYSTEM ===
+  // Find the teammate with the fewest active leads (excluding excluded persons)
+  const findNextAssignee = (excludePerson) => {
+    const counts = TEAM.filter(t => t !== excludePerson).map(person => ({
+      person,
+      count: contacts.filter(c => c.assigned_to === person && !["closed", "lost", "old", "not_interested"].includes(c.stage)).length,
+    }));
+    counts.sort((a, b) => a.count - b.count);
+    return counts[0]?.person || TEAM[0];
+  };
+
+  // Check if a lead's outreach sequence is complete
+  const isSequenceComplete = (c) => {
+    const seq = c.outreach_sequence || "Default";
+    let seqMsgs = messages.filter(m => (m.sequence_name || "Default") === seq);
+    if (seqMsgs.length === 0) seqMsgs = messages.filter(m => (m.sequence_name || "Default") === "Default");
+    return (c.current_step || 0) >= seqMsgs.length && seqMsgs.length > 0;
+  };
+
+  // Auto-handoff: scan for leads ready to be recycled
+  const autoRecycleLeads = async () => {
+    if (messages.length === 0 || contacts.length === 0) return;
+
+    const today = todayStr();
+    const updates = [];
+
+    for (const c of contacts) {
+      // Only recycle leads in active outreach with an assignee
+      if (c.stage !== "outreach" || !c.assigned_to) continue;
+      // Must have completed the sequence
+      if (!isSequenceComplete(c)) continue;
+      // Must have a last_contacted_at to measure cooldown from
+      if (!c.last_contacted_at) continue;
+      // 3-day cooldown after last message
+      if (daysDiff(c.last_contacted_at, today) < 3) continue;
+
+      const currentCycle = c.cycle || 1;
+      const originalOwner = c.original_owner || c.assigned_to;
+
+      if (currentCycle >= 3) {
+        // End of round 3 → kick to old, return to original owner
+        updates.push({
+          id: c.id,
+          assigned_to: originalOwner,
+          original_owner: originalOwner,
+          stage: "old",
+          next_follow_up: addDays(today, 75),
+          next_nurture_date: null,
+          loom_pending: false,
+        });
+      } else {
+        // Hand off to next person (least busy, excluding current owner)
+        const nextPerson = findNextAssignee(c.assigned_to);
+        updates.push({
+          id: c.id,
+          assigned_to: nextPerson,
+          original_owner: originalOwner,
+          stage: "new",
+          current_step: 0,
+          cycle: currentCycle + 1,
+          next_follow_up: today,
+          last_contacted_at: null,
+          history: c.history || [],
+        });
+      }
+    }
+
+    if (updates.length === 0) return;
+
+    // Apply updates one by one (Supabase doesn't bulk-update easily)
+    for (const u of updates) {
+      const { id, ...data } = u;
+      await supabase.from("contacts").update({ ...data, updated_at: new Date().toISOString() }).eq("id", id);
+      const c = contacts.find(x => x.id === id);
+      if (c) {
+        if (data.stage === "old") {
+          await logActivity("System", "recycled_to_old", `${c.name} returned to ${data.assigned_to} as old lead after 3 cycles`);
+        } else {
+          await logActivity("System", "recycled_lead", `${c.name} handed from ${c.assigned_to} to ${data.assigned_to} (cycle ${data.cycle})`);
+        }
+      }
+    }
+    if (updates.length > 0) {
+      console.log(`Recycled ${updates.length} leads`);
+    }
+  };
+
+  // Run recycle check once data is loaded (and again on contacts/messages changes, but throttled)
+  const recycleRunRef = useRef(0);
+  useEffect(() => {
+    if (!loading && contacts.length > 0 && messages.length > 0) {
+      const now = Date.now();
+      if (now - recycleRunRef.current > 60000) { // throttle to once per minute
+        recycleRunRef.current = now;
+        autoRecycleLeads();
+      }
+    }
+  }, [loading, contacts.length, messages.length]);
 
   // === STANDUP FEED DATA (Yesterday's recap) ===
   const getYesterdayRecap = () => {
@@ -688,7 +787,7 @@ export default function CRM() {
     const isO = ["new", "outreach", "old"].includes(c.stage); const isLoom = c.stage === "responded" && c.loom_pending; const isN = c.stage === "responded" && !c.loom_pending && c.next_nurture_date; const isInt = c.stage === "interested";
     return (<tr style={S.tr} onClick={() => setDetailId(detailId === c.id ? null : c.id)}>
       <td style={S.td} onClick={e => e.stopPropagation()}><input type="checkbox" checked={selected.has(c.id)} onChange={() => { const n = new Set(selected); if (n.has(c.id)) n.delete(c.id); else n.add(c.id); setSelected(n); }} style={{ cursor: "pointer", accentColor: "#3B82F6" }} /></td>
-      <td style={S.td}><div style={{ fontWeight: 500, color: "#F1F5F9", fontSize: 13 }}>{c.name}</div>{c.company && <div style={{ fontSize: 10, color: "#3B82F6" }}>{c.company}</div>}{showWho && <div style={{ fontSize: 10, color: c.assigned_to ? "#64748B" : "#F59E0B" }}>{c.assigned_to || "Unassigned"}</div>}{c.notes && <div style={{ fontSize: 10, color: "#475569", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.notes}</div>}</td>
+      <td style={S.td}><div style={{ fontWeight: 500, color: "#F1F5F9", fontSize: 13, display: "flex", alignItems: "center", gap: 5 }}>{c.name}{(c.cycle || 1) > 1 && <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 5px", borderRadius: 4, background: "#F59E0B20", color: "#F59E0B" }} title={`Cycle ${c.cycle} of 3 — recycled from ${c.original_owner}`}>R{c.cycle}</span>}</div>{c.company && <div style={{ fontSize: 10, color: "#3B82F6" }}>{c.company}</div>}{showWho && <div style={{ fontSize: 10, color: c.assigned_to ? "#64748B" : "#F59E0B" }}>{c.assigned_to || "Unassigned"}</div>}{c.notes && <div style={{ fontSize: 10, color: "#475569", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.notes}</div>}</td>
       <td style={S.td}><select value={c.stage} onChange={e => { e.stopPropagation(); if (e.target.value === "closed") setCloseId(c.id); else moveStage(c.id, e.target.value); }} onClick={e => e.stopPropagation()} style={{ ...S.sel, color: stg.color, borderColor: stg.color + "40" }}>{STAGES.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}</select></td>
       <td style={S.td} onClick={e => e.stopPropagation()}>{isO && nm ? (<button style={S.copyBtn} onClick={() => copy(c, "outreach")}><span style={{ fontSize: 11, color: "#CBD5E1", fontWeight: 500 }}>{nm.name}</span><span style={{ fontSize: 10, color: "#475569" }}>{copied === c.id + "outreach" ? "✓ Copied!" : nm.channel === "ig" ? "📱 Copy DM" : "📧 Copy Email"}</span></button>) : isLoom ? (<button style={{ ...S.copyBtn, borderColor: "#F59E0B30", background: "#F59E0B08" }}><span style={{ fontSize: 11, color: "#F59E0B", fontWeight: 600 }}>🎥 Send Loom</span><span style={{ fontSize: 10, color: "#475569" }}>Record & send personalized video</span></button>) : isInt ? (<span style={{ fontSize: 11, color: "#06B6D4", fontWeight: 500 }}>💬 Check in if quiet</span>) : isN && nn ? (<button style={{ ...S.copyBtn, borderColor: "#8B5CF630" }} onClick={() => copy(c, "nurture")}><span style={{ fontSize: 11, color: "#C4B5FD", fontWeight: 500 }}>{nn.name}</span><span style={{ fontSize: 10, color: "#475569" }}>{copied === c.id + "nurture" ? "✓ Copied!" : "🔁 Copy"}</span></button>) : (<span style={{ fontSize: 11, color: "#475569" }}>{["closed", "booked", "not_interested"].includes(c.stage) ? "✅" : "Done"}</span>)}</td>
       <td style={S.td}>{(isO || isInt) && c.next_follow_up ? <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 6, background: sd.bg, color: sd.color, display: "inline-flex", alignItems: "center", gap: 4 }}>{(sd.isToday || sd.isOverdue) && <span style={{ width: 7, height: 7, borderRadius: "50%", background: sd.isOverdue ? "#EF4444" : "#F59E0B", flexShrink: 0 }} />}{sd.text}</span> : isLoom ? <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 6, background: "#F59E0B18", color: "#F59E0B", display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 7, height: 7, borderRadius: "50%", background: "#F59E0B", flexShrink: 0 }} />ASAP</span> : isN && nd ? <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 6, background: nd.bg, color: nd.color, display: "inline-flex", alignItems: "center", gap: 4 }}>{(nd.isToday || nd.isOverdue) && <span style={{ width: 7, height: 7, borderRadius: "50%", background: nd.isOverdue ? "#EF4444" : "#F59E0B", flexShrink: 0 }} />}{nd.text}</span> : <span style={{ color: "#475569", fontSize: 11 }}>-</span>}</td>
@@ -700,7 +799,7 @@ export default function CRM() {
 
   const Table = ({ data, showWho = false }) => { const allIds = data.map(c => c.id); const allSelected = allIds.length > 0 && allIds.every(id => selected.has(id)); const toggleAll = () => { const n = new Set(selected); if (allSelected) allIds.forEach(id => n.delete(id)); else allIds.forEach(id => n.add(id)); setSelected(n); }; return (<div style={S.tw}><table style={S.tbl}><thead><tr><th style={{ ...S.th, width: 30 }}><input type="checkbox" checked={allSelected} onChange={toggleAll} style={{ cursor: "pointer", accentColor: "#3B82F6" }} /></th>{[{ k: "name", l: "Name" }, { k: "stage", l: "Stage" }, { k: null, l: "Next Message" }, { k: "next_follow_up", l: "Send Date" }, { k: null, l: "Value" }, { k: null, l: "Links" }, { k: null, l: "Actions" }].map((c, i) => (<th key={i} style={{ ...S.th, cursor: c.k ? "pointer" : "default" }} onClick={() => { if (!c.k) return; if (sortBy === c.k) setSortDir(d => d === "asc" ? "desc" : "asc"); else { setSortBy(c.k); setSortDir("asc"); } }}>{c.l}{sortBy === c.k && <span style={{ marginLeft: 3, fontSize: 9 }}>{sortDir === "asc" ? "▲" : "▼"}</span>}</th>))}</tr></thead><tbody>{data.map(c => <Row key={c.id} c={c} showWho={showWho} />)}</tbody></table></div>); };
 
-  const Detail = () => { const c = contacts.find(x => x.id === detailId); if (!c) return null; const nm = getNext(c); const nn = getNextN(c); return (<div style={S.detail}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}><div><h3 style={{ color: "#F1F5F9", fontSize: 17, fontWeight: 600, margin: 0 }}>{c.name}</h3>{c.company && <div style={{ color: "#3B82F6", fontSize: 12, marginTop: 2 }}>{c.company}</div>}<div style={{ color: "#64748B", fontSize: 11, marginTop: 3 }}>Added {fmtEU(c.created_at)} · Assigned to <strong style={{ color: "#CBD5E1" }}>{c.assigned_to}</strong></div></div><button style={S.x} onClick={() => setDetailId(null)}>✕</button></div><div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 12 }}>{c.ig && <div style={S.df}><span style={S.dl}>Instagram</span><span style={S.dv}>{c.ig}</span></div>}{c.email && <div style={S.df}><span style={S.dl}>Email</span><span style={S.dv}>{c.email}</span></div>}{c.youtube && <div style={S.df}><span style={S.dl}>YouTube</span><span style={S.dv}>{c.youtube}</span></div>}{c.website && <div style={S.df}><span style={S.dl}>Website</span><span style={S.dv}>{c.website}</span></div>}{c.linkedin && <div style={S.df}><span style={S.dl}>LinkedIn</span><span style={S.dv}>{c.linkedin}</span></div>}{c.pipeline_value > 0 && <div style={S.df}><span style={S.dl}>Pipeline Value</span><span style={{ ...S.dv, color: "#10B981" }}>{fmtMoney(c.pipeline_value)}</span></div>}{c.closed_value > 0 && <div style={S.df}><span style={S.dl}>Closed For</span><span style={{ ...S.dv, color: "#10B981" }}>{fmtMoney(c.closed_value)}</span></div>}</div>{c.notes && <div style={{ ...S.df, marginTop: 8 }}><span style={S.dl}>Notes</span><span style={{ ...S.dv, whiteSpace: "pre-wrap" }}>{c.notes}</span></div>}{nm && ["new", "outreach", "old"].includes(c.stage) && (<div style={{ marginTop: 12, padding: 10, background: "#0B1120", borderRadius: 8, border: "1px solid #1E293B" }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}><span style={{ color: "#94A3B8", fontSize: 10, fontWeight: 700, textTransform: "uppercase" }}>NEXT: {nm.name}</span><button style={S.sc} onClick={() => copy(c, "outreach")}>{copied === c.id + "outreach" ? "Copied!" : "Copy"}</button></div><div style={{ color: "#CBD5E1", fontSize: 12, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{nm.body}</div></div>)}{nn && c.stage === "responded" && (<div style={{ marginTop: 12, padding: 10, background: "#0B1120", borderRadius: 8, border: "1px solid #8B5CF620" }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}><span style={{ color: "#C4B5FD", fontSize: 10, fontWeight: 700, textTransform: "uppercase" }}>NURTURE: {nn.name}</span><button style={{ ...S.sc, borderColor: "#8B5CF640", color: "#C4B5FD" }} onClick={() => copy(c, "nurture")}>{copied === c.id + "nurture" ? "Copied!" : "Copy"}</button></div><div style={{ color: "#CBD5E1", fontSize: 12, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{nn.body}</div></div>)}{((c.history || []).length > 0 || (c.nurture_history || []).length > 0) && (<div style={{ marginTop: 12 }}><span style={{ color: "#64748B", fontSize: 10, fontWeight: 700, textTransform: "uppercase" }}>Activity</span><div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 3 }}>{[...(c.history || []).map(h => ({ ...h, t: "out" })), ...(c.nurture_history || []).map(h => ({ ...h, t: "nur" }))].sort((a, b) => b.at > a.at ? 1 : -1).map((h, i) => (<div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid #1E293B" }}><span style={{ color: h.t === "nur" ? "#C4B5FD" : "#CBD5E1", fontSize: 11 }}>{h.t === "nur" ? "🔁 " : "📤 "}{h.name}</span><span style={{ color: "#64748B", fontSize: 10 }}>{fmtEU(h.at)}</span></div>))}</div></div>)}</div>); };
+  const Detail = () => { const c = contacts.find(x => x.id === detailId); if (!c) return null; const nm = getNext(c); const nn = getNextN(c); return (<div style={S.detail}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}><div><h3 style={{ color: "#F1F5F9", fontSize: 17, fontWeight: 600, margin: 0, display: "flex", alignItems: "center", gap: 6 }}>{c.name}{(c.cycle || 1) > 1 && <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 5, background: "#F59E0B20", color: "#F59E0B" }}>Cycle {c.cycle}/3</span>}</h3>{c.company && <div style={{ color: "#3B82F6", fontSize: 12, marginTop: 2 }}>{c.company}</div>}<div style={{ color: "#64748B", fontSize: 11, marginTop: 3 }}>Added {fmtEU(c.created_at)} · Assigned to <strong style={{ color: "#CBD5E1" }}>{c.assigned_to}</strong>{c.original_owner && c.original_owner !== c.assigned_to && <span> · Originally <strong style={{ color: "#94A3B8" }}>{c.original_owner}</strong></span>}</div></div><button style={S.x} onClick={() => setDetailId(null)}>✕</button></div><div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 12 }}>{c.ig && <div style={S.df}><span style={S.dl}>Instagram</span><span style={S.dv}>{c.ig}</span></div>}{c.email && <div style={S.df}><span style={S.dl}>Email</span><span style={S.dv}>{c.email}</span></div>}{c.youtube && <div style={S.df}><span style={S.dl}>YouTube</span><span style={S.dv}>{c.youtube}</span></div>}{c.website && <div style={S.df}><span style={S.dl}>Website</span><span style={S.dv}>{c.website}</span></div>}{c.linkedin && <div style={S.df}><span style={S.dl}>LinkedIn</span><span style={S.dv}>{c.linkedin}</span></div>}{c.pipeline_value > 0 && <div style={S.df}><span style={S.dl}>Pipeline Value</span><span style={{ ...S.dv, color: "#10B981" }}>{fmtMoney(c.pipeline_value)}</span></div>}{c.closed_value > 0 && <div style={S.df}><span style={S.dl}>Closed For</span><span style={{ ...S.dv, color: "#10B981" }}>{fmtMoney(c.closed_value)}</span></div>}</div>{c.notes && <div style={{ ...S.df, marginTop: 8 }}><span style={S.dl}>Notes</span><span style={{ ...S.dv, whiteSpace: "pre-wrap" }}>{c.notes}</span></div>}{nm && ["new", "outreach", "old"].includes(c.stage) && (<div style={{ marginTop: 12, padding: 10, background: "#0B1120", borderRadius: 8, border: "1px solid #1E293B" }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}><span style={{ color: "#94A3B8", fontSize: 10, fontWeight: 700, textTransform: "uppercase" }}>NEXT: {nm.name}</span><button style={S.sc} onClick={() => copy(c, "outreach")}>{copied === c.id + "outreach" ? "Copied!" : "Copy"}</button></div><div style={{ color: "#CBD5E1", fontSize: 12, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{nm.body}</div></div>)}{nn && c.stage === "responded" && (<div style={{ marginTop: 12, padding: 10, background: "#0B1120", borderRadius: 8, border: "1px solid #8B5CF620" }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}><span style={{ color: "#C4B5FD", fontSize: 10, fontWeight: 700, textTransform: "uppercase" }}>NURTURE: {nn.name}</span><button style={{ ...S.sc, borderColor: "#8B5CF640", color: "#C4B5FD" }} onClick={() => copy(c, "nurture")}>{copied === c.id + "nurture" ? "Copied!" : "Copy"}</button></div><div style={{ color: "#CBD5E1", fontSize: 12, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{nn.body}</div></div>)}{((c.history || []).length > 0 || (c.nurture_history || []).length > 0) && (<div style={{ marginTop: 12 }}><span style={{ color: "#64748B", fontSize: 10, fontWeight: 700, textTransform: "uppercase" }}>Activity</span><div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 3 }}>{[...(c.history || []).map(h => ({ ...h, t: "out" })), ...(c.nurture_history || []).map(h => ({ ...h, t: "nur" }))].sort((a, b) => b.at > a.at ? 1 : -1).map((h, i) => (<div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid #1E293B" }}><span style={{ color: h.t === "nur" ? "#C4B5FD" : "#CBD5E1", fontSize: 11 }}>{h.t === "nur" ? "🔁 " : "📤 "}{h.name}</span><span style={{ color: "#64748B", fontSize: 10 }}>{fmtEU(h.at)}</span></div>))}</div></div>)}</div>); };
 
   const MsgView = ({ type }) => {
     const activeSeq = type === "outreach" ? activeOutreachSeq : activeNurtureSeq;
