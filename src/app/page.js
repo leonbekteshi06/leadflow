@@ -23,6 +23,8 @@ const daysDiff = (a, b) => { const d1 = new Date(a); d1.setHours(0,0,0,0); const
 const fmtEU = (d) => { if(!d) return ""; const x = new Date(d); return `${String(x.getDate()).padStart(2,"0")}.${String(x.getMonth()+1).padStart(2,"0")}.${x.getFullYear()}`; };
 const fmtDayName = (d) => { const x = new Date(d); return x.toLocaleDateString("en-US", { weekday: "long" }); };
 const weekStart = () => { const d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate()-d.getDay()+1); return d.toISOString().split("T")[0]; };
+const weekStartOf = (date) => { const d = new Date(date); d.setHours(0,0,0,0); const day = d.getDay(); const diff = day === 0 ? -6 : 1 - day; d.setDate(d.getDate() + diff); return d.toISOString().split("T")[0]; };
+const fmtWeekRange = (ws) => { const end = addDays(ws, 6); const s = new Date(ws); const e = new Date(end); return `${String(s.getDate()).padStart(2,"0")}.${String(s.getMonth()+1).padStart(2,"0")} - ${String(e.getDate()).padStart(2,"0")}.${String(e.getMonth()+1).padStart(2,"0")}.${e.getFullYear()}`; };
 const monthStart = () => { const d = new Date(); d.setHours(0,0,0,0); d.setDate(1); return d.toISOString().split("T")[0]; };
 const fmtMoney = (v) => new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}).format(v||0);
 const getWeekDates = () => { const ws = weekStart(); return Array.from({length:7},(_,i)=>addDays(ws,i)); };
@@ -42,6 +44,7 @@ export default function CRM() {
   const [activityLog, setActivityLog] = useState([]);
   const [allKpiEntries, setAllKpiEntries] = useState([]);
   const [allActivityLog, setAllActivityLog] = useState([]);
+  const [victories, setVictories] = useState([]);
   const [user, setUser] = useState(() => { if (typeof window !== "undefined") return localStorage.getItem("lf-user") || "Leon"; return "Leon"; });
   const [view, setView] = useState("dashboard");
   const [modal, setModal] = useState(null);
@@ -63,7 +66,7 @@ export default function CRM() {
 
   useEffect(() => {
     const load = async () => {
-      const [cRes, mRes, ktRes, keRes, alRes, allKeRes, allAlRes] = await Promise.all([
+      const [cRes, mRes, ktRes, keRes, alRes, allKeRes, allAlRes, vRes] = await Promise.all([
         supabase.from("contacts").select("*").order("created_at", { ascending: false }),
         supabase.from("message_templates").select("*").order("step"),
         supabase.from("kpi_targets").select("*"),
@@ -71,6 +74,7 @@ export default function CRM() {
         supabase.from("activity_log").select("*").order("created_at", { ascending: false }).limit(50),
         supabase.from("kpi_entries").select("*").gte("date", addDays(todayStr(), -400)),
         supabase.from("activity_log").select("*").gte("created_at", addDays(todayStr(), -400)).order("created_at", { ascending: false }),
+        supabase.from("weekly_victories").select("*").order("week_start", { ascending: false }),
       ]);
       if (cRes.data) setContacts(cRes.data);
       if (mRes.data) { setMessages(mRes.data.filter(m => m.type === "outreach")); setNurtureM(mRes.data.filter(m => m.type === "nurture")); }
@@ -79,6 +83,7 @@ export default function CRM() {
       if (alRes.data) setActivityLog(alRes.data);
       if (allKeRes.data) setAllKpiEntries(allKeRes.data);
       if (allAlRes.data) setAllActivityLog(allAlRes.data);
+      if (vRes.data) setVictories(vRes.data);
       setLoading(false);
     };
     load();
@@ -95,6 +100,7 @@ export default function CRM() {
         supabase.from("activity_log").select("*").order("created_at", { ascending: false }).limit(50).then(({ data }) => { if (data) setActivityLog(data); });
         supabase.from("activity_log").select("*").gte("created_at", addDays(todayStr(), -400)).order("created_at", { ascending: false }).then(({ data }) => { if (data) setAllActivityLog(data); });
       }).subscribe(),
+      supabase.channel("v-ch").on("postgres_changes", { event: "*", schema: "public", table: "weekly_victories" }, () => { supabase.from("weekly_victories").select("*").order("week_start", { ascending: false }).then(({ data }) => { if (data) setVictories(data); }); }).subscribe(),
     ];
     return () => subs.forEach(s => supabase.removeChannel(s));
   }, []);
@@ -165,6 +171,92 @@ export default function CRM() {
   const [pendingVariants, setPendingVariants] = useState({});
   const copy = async (c, type) => { const msg = type === "nurture" ? getNextN(c) : getNext(c); if (!msg) return; const vs = msg.variants || [{ label: "A", body: msg.body }]; const pick = vs[Math.floor(Math.random() * vs.length)]; try { await navigator.clipboard.writeText(pick.body); setCopied(c.id + type); setTimeout(() => setCopied(null), 2e3); setPendingVariants(p => ({ ...p, [c.id]: { label: pick.label, msg: msg.name } })); flash(`Copied Version ${pick.label}!`); } catch { flash("Couldn't copy", "error"); } };
   const importCSV = async (text, seq) => { const lines = text.trim().split("\n"); if (lines.length < 2) return flash("No data", "error"); const hdr = lines[0].split(",").map(h => h.trim().toLowerCase().replace(/['"]/g, "")); const mp = {}; hdr.forEach((h, i) => { if (h === "first name") mp.firstName = i; else if (h === "last name") mp.lastName = i; else if (h === "name" || h === "full name") mp.name = i; else if (h === "company name" || h === "company") mp.company = i; else if (h === "title" || h === "job title" || h === "position") mp.title = i; else if (h === "email" || h === "email address") mp.email = i; else if (h === "person linkedin url" || h === "linkedin" || h === "linkedin url") mp.linkedin = i; else if (h.includes("instagram") || h === "ig") mp.ig = i; else if (h === "website" || h === "company website" || h === "url" || h === "site") mp.website = i; else if (h.includes("youtube") || h === "yt") mp.youtube = i; else if (h === "notes" || h === "note") mp.notes = i; else if (h.includes("value") || h.includes("deal") || h === "pipeline") mp.pv = i; else if (h === "assigned to" || h === "owner") mp.assign = i; }); const hasName = mp.name !== undefined || mp.firstName !== undefined; if (!hasName) return flash("Need a 'Name' or 'First Name' column", "error"); const rows = []; let skipped = 0; for (let i = 1; i < lines.length; i++) { const v = []; let inQ = false; let cur = ""; for (let j = 0; j < lines[i].length; j++) { const ch = lines[i][j]; if (ch === '"') { inQ = !inQ; } else if (ch === ',' && !inQ) { v.push(cur.trim()); cur = ""; } else { cur += ch; } } v.push(cur.trim()); let nm = ""; if (mp.firstName !== undefined) { nm = `${v[mp.firstName] || ""} ${v[mp.lastName] || ""}`.trim(); } else { nm = v[mp.name] || ""; } if (!nm) continue; const email = v[mp.email] || ""; const title = v[mp.title] || ""; const company = v[mp.company] || ""; const linkedin = v[mp.linkedin] || ""; const ig = v[mp.ig] || ""; const youtube = v[mp.youtube] || ""; const dup = findDuplicate({ email, ig, linkedin, youtube }); if (dup) { skipped++; continue; } const np = []; if (title) np.push(title); if (v[mp.notes]) np.push(v[mp.notes]); rows.push({ name: nm, company: company || "", ig: ig, email: email, youtube: youtube, website: v[mp.website] || "", linkedin: linkedin || "", notes: np.join(" ") || "", stage: "new", current_step: 0, nurture_step: 0, created_at: todayStr(), next_follow_up: todayStr(), pipeline_value: parseFloat(v[mp.pv]) || 0, assigned_to: "", outreach_sequence: seq || "Default", nurture_sequence: "Default", history: [], nurture_history: [] }); } if (rows.length > 0) { const { error } = await supabase.from("contacts").insert(rows); if (!error) { flash(`Imported ${rows.length} leads${skipped > 0 ? ` (${skipped} duplicates skipped)` : ""}!`); logActivity(user, "imported_csv", `${rows.length} leads`); } else flash("Import error", "error"); } else if (skipped > 0) { flash(`All ${skipped} leads already exist`, "error"); } setModal(null); };
+
+  // === VICTORY ROYALE SYSTEM ===
+  // Calculate winners for a specific week (using all KPI entries data)
+  const calcWeekWinners = (weekStartDate) => {
+    const weekDays = Array.from({ length: 7 }, (_, i) => addDays(weekStartDate, i));
+    const results = TEAM.map(person => {
+      const activeTargets = kpiTargets.filter(t => t.person === person && t.active && t.daily_target > 0);
+      let daysHit = 0;
+      let totalActivity = 0;
+      if (activeTargets.length > 0) {
+        weekDays.forEach(d => {
+          const allHit = activeTargets.every(t => {
+            const entry = allKpiEntries.find(e => e.person === person && e.category === t.category && e.date === d);
+            return entry && entry.count >= t.daily_target;
+          });
+          if (allHit) daysHit++;
+        });
+        // Total activity for tiebreaker
+        weekDays.forEach(d => {
+          activeTargets.forEach(t => {
+            const entry = allKpiEntries.find(e => e.person === person && e.category === t.category && e.date === d);
+            totalActivity += entry?.count || 0;
+          });
+        });
+      }
+      return { person, daysHit, totalActivity };
+    });
+    // Sort: most days hit, then most activity (tiebreaker)
+    results.sort((a, b) => b.daysHit - a.daysHit || b.totalActivity - a.totalActivity);
+    // Only award if at least one person hit at least 1 day (no fake winners on dead weeks)
+    if (results[0].daysHit === 0) return null;
+    return {
+      first: results[0].person,
+      second: results[1].person,
+      third: results[2].person,
+      details: results,
+    };
+  };
+
+  // Get total wins per person per title
+  const getWinCount = (person, title) => victories.filter(v => v[title] === person).length;
+
+  // Auto-award past weeks that haven't been recorded yet
+  const autoAwardPastWeeks = async () => {
+    const currentWeek = weekStart();
+    const awardedWeeks = new Set(victories.map(v => v.week_start));
+
+    // Find earliest KPI entry date to know how far back to go
+    if (allKpiEntries.length === 0) return;
+    const earliestDate = allKpiEntries.reduce((min, e) => e.date < min ? e.date : min, todayStr());
+    const earliestWeek = weekStartOf(earliestDate);
+
+    // Walk backward from current week (exclusive) to earliest week
+    const weeksToAward = [];
+    let w = addDays(currentWeek, -7);
+    while (w >= earliestWeek) {
+      if (!awardedWeeks.has(w)) weeksToAward.push(w);
+      w = addDays(w, -7);
+    }
+
+    if (weeksToAward.length === 0) return;
+
+    const inserts = [];
+    for (const ws of weeksToAward) {
+      const winners = calcWeekWinners(ws);
+      if (winners) {
+        inserts.push({
+          week_start: ws,
+          top_g: winners.first,
+          bottom_g: winners.second,
+          gayboy: winners.third,
+        });
+      }
+    }
+    if (inserts.length > 0) {
+      await supabase.from("weekly_victories").insert(inserts);
+      console.log(`Awarded ${inserts.length} past weeks`);
+    }
+  };
+
+  // Run auto-award once data is loaded
+  useEffect(() => {
+    if (!loading && allKpiEntries.length > 0 && kpiTargets.length > 0) {
+      autoAwardPastWeeks();
+    }
+  }, [loading, allKpiEntries.length, kpiTargets.length, victories.length]);
 
   // === STANDUP FEED DATA (Yesterday's recap) ===
   const getYesterdayRecap = () => {
@@ -639,6 +731,64 @@ export default function CRM() {
     return (<div style={S.content}>
       <div style={S.header}><div><h1 style={S.h1}>KPIs</h1><p style={S.sub}>Team performance and accountability</p></div><button style={S.ghost} onClick={() => setModal({ type: "kpi" })}>⚙ Edit Targets</button></div>
 
+      {/* Hall of Champions */}
+      {victories.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <h2 style={S.h2}>🏆 Hall of Champions</h2>
+          <div style={{ background: "linear-gradient(135deg, #0F172A 0%, #1E1B4B 100%)", borderRadius: 12, border: "1px solid #F59E0B30", padding: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 14 }}>
+              {TEAM.map(person => {
+                const topG = getWinCount(person, "top_g");
+                const bottomG = getWinCount(person, "bottom_g");
+                const gayboy = getWinCount(person, "gayboy");
+                return (
+                  <div key={person} style={{ padding: 10, background: "#0B1120", borderRadius: 10, border: "1px solid #1E293B", textAlign: "center" }}>
+                    <div style={{ color: "#F1F5F9", fontWeight: 700, fontSize: 14, marginBottom: 8 }}>
+                      {person}
+                      {person === user && <span style={{ color: "#3B82F6", fontSize: 10, marginLeft: 4 }}>(you)</span>}
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "center", gap: 10 }}>
+                      <div style={{ textAlign: "center" }}>
+                        <div style={{ fontSize: 22, lineHeight: 1 }} title="The Top G wins">👑</div>
+                        <div style={{ fontSize: 16, fontWeight: 700, color: "#F59E0B", fontFamily: "'Outfit',sans-serif", marginTop: 2 }}>{topG}</div>
+                        <div style={{ fontSize: 8, color: "#64748B", fontWeight: 600, textTransform: "uppercase" }}>Top G</div>
+                      </div>
+                      <div style={{ textAlign: "center" }}>
+                        <div style={{ fontSize: 22, lineHeight: 1 }} title="Bottom G weeks">🥈</div>
+                        <div style={{ fontSize: 16, fontWeight: 700, color: "#94A3B8", fontFamily: "'Outfit',sans-serif", marginTop: 2 }}>{bottomG}</div>
+                        <div style={{ fontSize: 8, color: "#64748B", fontWeight: 600, textTransform: "uppercase" }}>Bottom G</div>
+                      </div>
+                      <div style={{ textAlign: "center" }}>
+                        <div style={{ fontSize: 22, lineHeight: 1 }} title="Certified Homosexual Gayboy">🏳️‍🌈</div>
+                        <div style={{ fontSize: 16, fontWeight: 700, color: "#EC4899", fontFamily: "'Outfit',sans-serif", marginTop: 2 }}>{gayboy}</div>
+                        <div style={{ fontSize: 8, color: "#64748B", fontWeight: 600, textTransform: "uppercase" }}>Gayboy</div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Past weeks ledger */}
+            <div style={{ borderTop: "1px solid #1E293B", paddingTop: 10 }}>
+              <div style={{ fontSize: 10, color: "#64748B", fontWeight: 700, textTransform: "uppercase", marginBottom: 6 }}>Past Weeks ({victories.length})</div>
+              <div style={{ maxHeight: 180, overflow: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
+                {victories.slice(0, 20).map(v => (
+                  <div key={v.week_start} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 8px", background: "#0B1120", borderRadius: 6, fontSize: 11 }}>
+                    <span style={{ color: "#64748B", fontWeight: 600, minWidth: 110 }}>{fmtWeekRange(v.week_start)}</span>
+                    <div style={{ display: "flex", gap: 10, flex: 1, justifyContent: "flex-end" }}>
+                      <span style={{ color: "#F59E0B" }}>👑 {v.top_g}</span>
+                      <span style={{ color: "#94A3B8" }}>🥈 {v.bottom_g}</span>
+                      <span style={{ color: "#EC4899" }}>🏳️‍🌈 {v.gayboy}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Leaderboard */}
       <div style={{ marginBottom: 24 }}>
         <h2 style={S.h2}>Leaderboard (This Week)</h2>
@@ -646,13 +796,15 @@ export default function CRM() {
           {lb.map((p, i) => {
             const isKing = kingPerson && p.person === kingPerson;
             const isGay = kingPerson && p.person !== kingPerson;
+            const topGCount = getWinCount(p.person, "top_g");
             return (
             <div key={p.person} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", background: "#0F172A", borderRadius: 10, border: `1px solid ${i === 0 ? "#F59E0B30" : "#1E293B"}`, borderLeft: i === 0 ? "3px solid #F59E0B" : i === 1 ? "3px solid #94A3B8" : i === 2 ? "3px solid #B45309" : "3px solid #1E293B" }}>
               <span style={{ fontSize: 20 }}>{medals[i] || `#${i + 1}`}</span>
               <div style={{ flex: 1 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                   <span style={{ color: "#F1F5F9", fontWeight: 600, fontSize: 15 }}>{p.person}</span>
                   {p.person === user && <span style={{ color: "#3B82F6", fontSize: 10 }}>(you)</span>}
+                  {topGCount > 0 && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 4, background: "#F59E0B15", color: "#F59E0B", display: "inline-flex", alignItems: "center", gap: 3 }} title={`${topGCount} weekly Top G wins`}>👑 {topGCount}</span>}
                   {isKing && <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: "#F59E0B20", color: "#F59E0B" }}>👑 KING</span>}
                   {isGay && <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: "#EC489920", color: "#EC4899" }}>🏳️‍🌈 officially gay</span>}
                 </div>
