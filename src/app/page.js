@@ -117,7 +117,57 @@ export default function CRM() {
 
   const markSent = async (id) => { const c = contacts.find(x => x.id === id); if (!c) return; const ns = (c.current_step || 0) + 1; const seq = c.outreach_sequence || "Default"; let seqMsgs = messages.filter(m => (m.sequence_name || "Default") === seq).sort((a, b) => a.step - b.step); if (seqMsgs.length === 0) seqMsgs = messages.filter(m => (m.sequence_name || "Default") === "Default").sort((a, b) => a.step - b.step); const cm = seqMsgs[c.current_step || 0]; const nm = seqMsgs[ns]; const pv = pendingVariants[id]; const variant = pv?.label || "A"; const isFirst = (c.current_step || 0) === 0; const isLoomSeq = seq.toLowerCase().includes("loom"); const kpiCat = isLoomSeq ? "Looms" : "DMs"; if (isFirst) { await logKpi(user, kpiCat, 1); } const upd = { current_step: ns, stage: ns > 0 && ["new", "old"].includes(c.stage) ? "outreach" : c.stage, last_contacted_at: todayStr(), next_follow_up: nm ? addDays(todayStr(), nm.delay_days) : null, history: [...(c.history || []), { step: ns, name: cm?.name || `Msg ${ns}`, variant, at: todayStr() }] }; if (isFirst || !c.assigned_to) upd.assigned_to = user; if (isFirst && !c.original_owner) { upd.original_owner = user; if (!c.cycle) upd.cycle = 1; } await updateContact(id, upd); setPendingVariants(p => { const n = { ...p }; delete n[id]; return n; }); logActivity(user, "sent_outreach", `${cm?.name} (v${variant}) to ${c.name}${c.cycle > 1 ? ` (cycle ${c.cycle})` : ""}`); flash(isFirst ? `Marked sent! (+1 ${kpiCat})` : "Marked sent!"); };
   const markNurtureSent = async (id) => { const c = contacts.find(x => x.id === id); if (!c) return; const ns = (c.nurture_step || 0) + 1; const seq = c.nurture_sequence || "Default"; let seqMsgs = nurtureM.filter(m => (m.sequence_name || "Default") === seq).sort((a, b) => a.step - b.step); if (seqMsgs.length === 0) seqMsgs = nurtureM.filter(m => (m.sequence_name || "Default") === "Default").sort((a, b) => a.step - b.step); const cm = seqMsgs[c.nurture_step || 0]; const nm = seqMsgs[ns]; await updateContact(id, { nurture_step: ns, last_contacted_at: todayStr(), next_nurture_date: nm ? addDays(todayStr(), nm.delay_days) : addDays(todayStr(), 7), nurture_history: [...(c.nurture_history || []), { step: ns, name: cm?.name || `N ${ns}`, at: todayStr() }] }); logActivity(user, "sent_nurture", `${cm?.name} to ${c.name}`); flash("Nurture sent!"); };
-  const moveStage = async (id, stage) => { const c = contacts.find(x => x.id === id); const u = { stage }; if (stage === "responded") { u.loom_pending = true; u.next_follow_up = todayStr(); u.next_nurture_date = null; u.nurture_step = 0; } if (stage === "interested") { u.next_follow_up = addDays(todayStr(), 3); u.next_nurture_date = null; u.loom_pending = false; } if (["booked", "closed", "lost", "not_interested"].includes(stage)) { u.next_follow_up = null; u.next_nurture_date = null; u.loom_pending = false; } if (stage === "old") { u.next_follow_up = addDays(todayStr(), 75); u.next_nurture_date = null; u.loom_pending = false; } await updateContact(id, u); logActivity(user, "moved_stage", `${c?.name} to ${STAGES.find(s => s.id === stage)?.label}`); flash(`Moved to ${STAGES.find(s => s.id === stage)?.label}`); };
+  const moveStage = async (id, stage) => {
+    const c = contacts.find(x => x.id === id);
+    if (!c) return;
+
+    // Special case: "Not Interested" triggers a handoff to another teammate (same flow as auto-recycle)
+    if (stage === "not_interested") {
+      const currentCycle = c.cycle || 1;
+      const originalOwner = c.original_owner || c.assigned_to || user;
+
+      if (currentCycle >= 3) {
+        // Already on cycle 3 → kick to old, return to original owner, NO auto-message
+        await updateContact(id, {
+          assigned_to: originalOwner,
+          original_owner: originalOwner,
+          stage: "old",
+          next_follow_up: null,
+          next_nurture_date: null,
+          loom_pending: false,
+        });
+        logActivity(user, "marked_not_interested", `${c.name} → returned to ${originalOwner} as old lead (already cycle 3)`);
+        flash(`${c.name} returned to ${originalOwner} as old lead`);
+      } else {
+        // Hand off to teammate with fewest active leads
+        const nextPerson = findNextAssignee(c.assigned_to || user);
+        await updateContact(id, {
+          assigned_to: nextPerson,
+          original_owner: originalOwner,
+          stage: "new",
+          current_step: 0,
+          cycle: currentCycle + 1,
+          next_follow_up: todayStr(),
+          last_contacted_at: null,
+          loom_pending: false,
+          next_nurture_date: null,
+        });
+        logActivity(user, "marked_not_interested", `${c.name} → handed to ${nextPerson} (cycle ${currentCycle + 1})`);
+        flash(`${c.name} handed off to ${nextPerson}`);
+      }
+      return;
+    }
+
+    // Normal stage moves
+    const u = { stage };
+    if (stage === "responded") { u.loom_pending = true; u.next_follow_up = todayStr(); u.next_nurture_date = null; u.nurture_step = 0; }
+    if (stage === "interested") { u.next_follow_up = addDays(todayStr(), 3); u.next_nurture_date = null; u.loom_pending = false; }
+    if (["booked", "closed", "lost"].includes(stage)) { u.next_follow_up = null; u.next_nurture_date = null; u.loom_pending = false; }
+    if (stage === "old") { u.next_follow_up = addDays(todayStr(), 75); u.next_nurture_date = null; u.loom_pending = false; }
+    await updateContact(id, u);
+    logActivity(user, "moved_stage", `${c?.name} to ${STAGES.find(s => s.id === stage)?.label}`);
+    flash(`Moved to ${STAGES.find(s => s.id === stage)?.label}`);
+  };
   const pingLead = async (id) => { const c = contacts.find(x => x.id === id); if (!c) return; await updateContact(id, { next_follow_up: addDays(todayStr(), 3), last_contacted_at: todayStr() }); logActivity(user, "pinged_lead", c.name); flash(`Pinged! Check in again in 3 days.`); };
   const confirmLoom = async (id) => { const c = contacts.find(x => x.id === id); if (!c) return; const seq = c.nurture_sequence || "Default"; let seqMsgs = nurtureM.filter(m => (m.sequence_name || "Default") === seq).sort((a, b) => a.step - b.step); if (seqMsgs.length === 0) seqMsgs = nurtureM.filter(m => (m.sequence_name || "Default") === "Default").sort((a, b) => a.step - b.step); const firstMsg = seqMsgs[0]; const delay = firstMsg ? firstMsg.delay_days : 2; await logKpi(user, "Looms", 1); await updateContact(id, { loom_pending: false, next_follow_up: null, next_nurture_date: addDays(todayStr(), delay), last_contacted_at: todayStr() }); logActivity(user, "sent_loom", c.name); flash(`Loom sent! (+1 Looms) Nurture in ${delay}d.`); };
   const resetProgress = async (id, step = 0) => { const c = contacts.find(x => x.id === id); if (!c) return; await updateContact(id, { current_step: step, nurture_step: 0, stage: step === 0 ? "new" : "outreach", next_follow_up: todayStr(), next_nurture_date: null, history: step === 0 ? [] : c.history }); flash(`${c.name} reset to step ${step}`); };
@@ -298,13 +348,13 @@ export default function CRM() {
       const originalOwner = c.original_owner || c.assigned_to;
 
       if (currentCycle >= 3) {
-        // End of round 3 → kick to old, return to original owner
+        // End of round 3 → kick to old, return to original owner, NO auto-message
         updates.push({
           id: c.id,
           assigned_to: originalOwner,
           original_owner: originalOwner,
           stage: "old",
-          next_follow_up: addDays(today, 75),
+          next_follow_up: null,
           next_nurture_date: null,
           loom_pending: false,
         });
