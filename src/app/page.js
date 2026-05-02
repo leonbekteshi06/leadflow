@@ -111,24 +111,15 @@ export default function CRM() {
   // Contact CRUD
   // Normalize a string for comparison — lowercase, trimmed, strip @, strip http(s)://, strip www., strip trailing slash
   const norm = (s) => (s || "").toString().toLowerCase().trim().replace(/^@/, "").replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/$/, "");
-  // Normalize a name — strip punctuation/extra whitespace so "John Smith" === "john smith." === "John  Smith"
-  const normName = (s) => (s || "").toString().toLowerCase().trim().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ");
 
   const findDuplicate = (d, pool = null) => {
     const checkAgainst = pool || contacts;
-    const e = norm(d.email), i = norm(d.ig), l = norm(d.linkedin), y = norm(d.youtube), w = norm(d.website), n = normName(d.name), co = normName(d.company);
+    const e = norm(d.email), i = norm(d.ig), l = norm(d.linkedin), y = norm(d.youtube);
     return checkAgainst.find(c => {
       if (e && norm(c.email) === e) return true;
       if (i && norm(c.ig) === i) return true;
       if (l && norm(c.linkedin) === l) return true;
       if (y && norm(c.youtube) === y) return true;
-      if (w && norm(c.website) === w) return true;
-      // Name match — but ONLY if combined with a matching company OR no company specified on either side (avoids false positives like multiple "John Smith"s at different companies)
-      if (n && normName(c.name) === n) {
-        const cCo = normName(c.company);
-        if (!co && !cCo) return true; // both have no company, name match is enough
-        if (co && cCo && co === cCo) return true; // same company too
-      }
       return false;
     });
   };
@@ -532,9 +523,6 @@ export default function CRM() {
       const i = norm(c.ig); if (i) addToGroup(`ig:${i}`, c);
       const l = norm(c.linkedin); if (l) addToGroup(`linkedin:${l}`, c);
       const y = norm(c.youtube); if (y) addToGroup(`youtube:${y}`, c);
-      const w = norm(c.website); if (w) addToGroup(`website:${w}`, c);
-      const n = normName(c.name); const co = normName(c.company);
-      if (n) addToGroup(`name:${n}|${co}`, c);
     });
     // Filter to only groups with 2+ contacts, dedupe contacts that appear in multiple groups
     const seen = new Set();
