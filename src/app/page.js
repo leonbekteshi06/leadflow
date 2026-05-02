@@ -109,21 +109,34 @@ export default function CRM() {
   const logActivity = async (person, action, detail = "") => { await supabase.from("activity_log").insert({ person, action, detail }); };
 
   // Contact CRUD
-  // Normalize a string for comparison — lowercase, trimmed, strip @, strip http(s)://, strip www., strip trailing slash
-  const norm = (s) => (s || "").toString().toLowerCase().trim().replace(/^@/, "").replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/$/, "");
+  // Normalize an Instagram URL/handle for comparison
+  // Handles: "@dave", "dave", "instagram.com/dave", "https://www.instagram.com/dave/", "https://instagram.com/dave?hl=en"
+  // All become: "dave"
+  const normIG = (s) => {
+    if (!s) return "";
+    return s.toString()
+      .toLowerCase()
+      .trim()
+      .replace(/^@/, "")
+      .replace(/^https?:\/\//, "")
+      .replace(/^www\./, "")
+      .replace(/^instagram\.com\//, "")
+      .replace(/\?.*$/, "") // strip query strings BEFORE trailing slash
+      .replace(/\/$/, "")
+      .replace(/\/.*$/, ""); // strip anything after the username (paths like /reels, /tagged)
+  };
 
+  // ONLY checks Instagram. Same IG = same person. Different IG (or no IG) = different person.
   const findDuplicate = (d, pool = null) => {
     const checkAgainst = pool || contacts;
-    const e = norm(d.email), i = norm(d.ig), l = norm(d.linkedin), y = norm(d.youtube);
+    const i = normIG(d.ig);
+    if (!i) return null; // No IG to check against = not a duplicate
     return checkAgainst.find(c => {
-      if (e && norm(c.email) === e) return true;
-      if (i && norm(c.ig) === i) return true;
-      if (l && norm(c.linkedin) === l) return true;
-      if (y && norm(c.youtube) === y) return true;
-      return false;
+      const cIG = normIG(c.ig);
+      return cIG && cIG === i;
     });
   };
-  const addContact = async (d) => { const dup = findDuplicate(d); if (dup) { flash(`⚠️ ${dup.name} already exists (${dup.assigned_to || "unassigned"})`, "error"); return false; } const { error } = await supabase.from("contacts").insert({ name: d.name, company: d.company || "", ig: d.ig || "", email: d.email || "", youtube: d.youtube || "", website: d.website || "", linkedin: d.linkedin || "", notes: d.notes || "", stage: "new", current_step: 0, nurture_step: 0, created_at: todayStr(), next_follow_up: todayStr(), pipeline_value: d.pipeline_value || 0, assigned_to: "", outreach_sequence: d.outreach_sequence || "Default", nurture_sequence: d.nurture_sequence || "Default", history: [], nurture_history: [] }); if (!error) { flash(`${d.name} added`); logActivity(user, "added_lead", d.name); return true; } else { if (error.message?.includes("duplicate") || error.code === "23505") { flash(`⚠️ ${d.name} already exists in database`, "error"); } else { flash("Error: " + error.message, "error"); } return false; } };
+  const addContact = async (d) => { const dup = findDuplicate(d); if (dup) { flash(`⚠️ ${dup.name} already exists with that Instagram (${dup.assigned_to || "unassigned"})`, "error"); return false; } const { error } = await supabase.from("contacts").insert({ name: d.name, company: d.company || "", ig: d.ig || "", email: d.email || "", youtube: d.youtube || "", website: d.website || "", linkedin: d.linkedin || "", notes: d.notes || "", stage: "new", current_step: 0, nurture_step: 0, created_at: todayStr(), next_follow_up: todayStr(), pipeline_value: d.pipeline_value || 0, assigned_to: "", outreach_sequence: d.outreach_sequence || "Default", nurture_sequence: d.nurture_sequence || "Default", history: [], nurture_history: [] }); if (!error) { flash(`${d.name} added`); logActivity(user, "added_lead", d.name); return true; } else { flash("Error: " + error.message, "error"); return false; } };
   const updateContact = async (id, data) => { await supabase.from("contacts").update({ ...data, updated_at: new Date().toISOString() }).eq("id", id); };
   const deleteContact = async (id) => { const name = contacts.find(c => c.id === id)?.name; await supabase.from("contacts").delete().eq("id", id); setDelId(null); if (detailId === id) setDetailId(null); flash(`${name} removed`, "info"); };
   const bulkDelete = async () => { if (selected.size === 0) return; const ids = Array.from(selected); await supabase.from("contacts").delete().in("id", ids); setSelected(new Set()); flash(`Deleted ${ids.length} leads`, "info"); };
@@ -519,10 +532,7 @@ export default function CRM() {
       groups.get(key).push(contact);
     };
     contacts.forEach(c => {
-      const e = norm(c.email); if (e) addToGroup(`email:${e}`, c);
-      const i = norm(c.ig); if (i) addToGroup(`ig:${i}`, c);
-      const l = norm(c.linkedin); if (l) addToGroup(`linkedin:${l}`, c);
-      const y = norm(c.youtube); if (y) addToGroup(`youtube:${y}`, c);
+      const i = normIG(c.ig); if (i) addToGroup(`ig:${i}`, c);
     });
     // Filter to only groups with 2+ contacts, dedupe contacts that appear in multiple groups
     const seen = new Set();
