@@ -109,8 +109,30 @@ export default function CRM() {
   const logActivity = async (person, action, detail = "") => { await supabase.from("activity_log").insert({ person, action, detail }); };
 
   // Contact CRUD
-  const findDuplicate = (d) => { const norm = s => (s || "").toString().toLowerCase().trim().replace(/^@/, "").replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, ""); const e = norm(d.email), i = norm(d.ig), l = norm(d.linkedin), y = norm(d.youtube); return contacts.find(c => (e && norm(c.email) === e) || (i && norm(c.ig) === i) || (l && norm(c.linkedin) === l) || (y && norm(c.youtube) === y)); };
-  const addContact = async (d) => { const dup = findDuplicate(d); if (dup) { flash(`⚠️ ${dup.name} already exists (${dup.assigned_to || "unassigned"})`, "error"); return false; } const { error } = await supabase.from("contacts").insert({ name: d.name, company: d.company || "", ig: d.ig || "", email: d.email || "", youtube: d.youtube || "", website: d.website || "", linkedin: d.linkedin || "", notes: d.notes || "", stage: "new", current_step: 0, nurture_step: 0, created_at: todayStr(), next_follow_up: todayStr(), pipeline_value: d.pipeline_value || 0, assigned_to: "", outreach_sequence: d.outreach_sequence || "Default", nurture_sequence: d.nurture_sequence || "Default", history: [], nurture_history: [] }); if (!error) { flash(`${d.name} added`); logActivity(user, "added_lead", d.name); return true; } else { flash("Error", "error"); return false; } };
+  // Normalize a string for comparison — lowercase, trimmed, strip @, strip http(s)://, strip www., strip trailing slash
+  const norm = (s) => (s || "").toString().toLowerCase().trim().replace(/^@/, "").replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/$/, "");
+  // Normalize a name — strip punctuation/extra whitespace so "John Smith" === "john smith." === "John  Smith"
+  const normName = (s) => (s || "").toString().toLowerCase().trim().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ");
+
+  const findDuplicate = (d, pool = null) => {
+    const checkAgainst = pool || contacts;
+    const e = norm(d.email), i = norm(d.ig), l = norm(d.linkedin), y = norm(d.youtube), w = norm(d.website), n = normName(d.name), co = normName(d.company);
+    return checkAgainst.find(c => {
+      if (e && norm(c.email) === e) return true;
+      if (i && norm(c.ig) === i) return true;
+      if (l && norm(c.linkedin) === l) return true;
+      if (y && norm(c.youtube) === y) return true;
+      if (w && norm(c.website) === w) return true;
+      // Name match — but ONLY if combined with a matching company OR no company specified on either side (avoids false positives like multiple "John Smith"s at different companies)
+      if (n && normName(c.name) === n) {
+        const cCo = normName(c.company);
+        if (!co && !cCo) return true; // both have no company, name match is enough
+        if (co && cCo && co === cCo) return true; // same company too
+      }
+      return false;
+    });
+  };
+  const addContact = async (d) => { const dup = findDuplicate(d); if (dup) { flash(`⚠️ ${dup.name} already exists (${dup.assigned_to || "unassigned"})`, "error"); return false; } const { error } = await supabase.from("contacts").insert({ name: d.name, company: d.company || "", ig: d.ig || "", email: d.email || "", youtube: d.youtube || "", website: d.website || "", linkedin: d.linkedin || "", notes: d.notes || "", stage: "new", current_step: 0, nurture_step: 0, created_at: todayStr(), next_follow_up: todayStr(), pipeline_value: d.pipeline_value || 0, assigned_to: "", outreach_sequence: d.outreach_sequence || "Default", nurture_sequence: d.nurture_sequence || "Default", history: [], nurture_history: [] }); if (!error) { flash(`${d.name} added`); logActivity(user, "added_lead", d.name); return true; } else { if (error.message?.includes("duplicate") || error.code === "23505") { flash(`⚠️ ${d.name} already exists in database`, "error"); } else { flash("Error: " + error.message, "error"); } return false; } };
   const updateContact = async (id, data) => { await supabase.from("contacts").update({ ...data, updated_at: new Date().toISOString() }).eq("id", id); };
   const deleteContact = async (id) => { const name = contacts.find(c => c.id === id)?.name; await supabase.from("contacts").delete().eq("id", id); setDelId(null); if (detailId === id) setDetailId(null); flash(`${name} removed`, "info"); };
   const bulkDelete = async () => { if (selected.size === 0) return; const ids = Array.from(selected); await supabase.from("contacts").delete().in("id", ids); setSelected(new Set()); flash(`Deleted ${ids.length} leads`, "info"); };
@@ -220,7 +242,96 @@ export default function CRM() {
   const getNextN = (c) => { const seq = c.nurture_sequence || "Default"; let seqMsgs = nurtureM.filter(m => (m.sequence_name || "Default") === seq).sort((a, b) => a.step - b.step); if (seqMsgs.length === 0) seqMsgs = nurtureM.filter(m => (m.sequence_name || "Default") === "Default").sort((a, b) => a.step - b.step); if (seqMsgs.length === 0) seqMsgs = nurtureM.sort((a, b) => a.step - b.step); const idx = c.nurture_step || 0; const m = idx < seqMsgs.length ? seqMsgs[idx] : seqMsgs.length > 0 ? seqMsgs[idx % seqMsgs.length] : null; if (!m) return null; const firstName = c.name.split(" ")[0]; const variants = [{ label: "A", body: m.body.replace(/\{\{name\}\}/g, firstName) }, ...((m.variants || []).map(v => ({ label: v.label, body: v.body.replace(/\{\{name\}\}/g, firstName) })))]; return { ...m, variants, body: variants[0].body }; };
   const [pendingVariants, setPendingVariants] = useState({});
   const copy = async (c, type) => { const msg = type === "nurture" ? getNextN(c) : getNext(c); if (!msg) return; const vs = msg.variants || [{ label: "A", body: msg.body }]; const pick = vs[Math.floor(Math.random() * vs.length)]; try { await navigator.clipboard.writeText(pick.body); setCopied(c.id + type); setTimeout(() => setCopied(null), 2e3); setPendingVariants(p => ({ ...p, [c.id]: { label: pick.label, msg: msg.name } })); flash(`Copied Version ${pick.label}!`); } catch { flash("Couldn't copy", "error"); } };
-  const importCSV = async (text, seq) => { const lines = text.trim().split("\n"); if (lines.length < 2) return flash("No data", "error"); const hdr = lines[0].split(",").map(h => h.trim().toLowerCase().replace(/['"]/g, "")); const mp = {}; hdr.forEach((h, i) => { if (h === "first name") mp.firstName = i; else if (h === "last name") mp.lastName = i; else if (h === "name" || h === "full name") mp.name = i; else if (h === "company name" || h === "company") mp.company = i; else if (h === "title" || h === "job title" || h === "position") mp.title = i; else if (h === "email" || h === "email address") mp.email = i; else if (h === "person linkedin url" || h === "linkedin" || h === "linkedin url") mp.linkedin = i; else if (h.includes("instagram") || h === "ig") mp.ig = i; else if (h === "website" || h === "company website" || h === "url" || h === "site") mp.website = i; else if (h.includes("youtube") || h === "yt") mp.youtube = i; else if (h === "notes" || h === "note") mp.notes = i; else if (h.includes("value") || h.includes("deal") || h === "pipeline") mp.pv = i; else if (h === "assigned to" || h === "owner") mp.assign = i; }); const hasName = mp.name !== undefined || mp.firstName !== undefined; if (!hasName) return flash("Need a 'Name' or 'First Name' column", "error"); const rows = []; let skipped = 0; for (let i = 1; i < lines.length; i++) { const v = []; let inQ = false; let cur = ""; for (let j = 0; j < lines[i].length; j++) { const ch = lines[i][j]; if (ch === '"') { inQ = !inQ; } else if (ch === ',' && !inQ) { v.push(cur.trim()); cur = ""; } else { cur += ch; } } v.push(cur.trim()); let nm = ""; if (mp.firstName !== undefined) { nm = `${v[mp.firstName] || ""} ${v[mp.lastName] || ""}`.trim(); } else { nm = v[mp.name] || ""; } if (!nm) continue; const email = v[mp.email] || ""; const title = v[mp.title] || ""; const company = v[mp.company] || ""; const linkedin = v[mp.linkedin] || ""; const ig = v[mp.ig] || ""; const youtube = v[mp.youtube] || ""; const dup = findDuplicate({ email, ig, linkedin, youtube }); if (dup) { skipped++; continue; } const np = []; if (title) np.push(title); if (v[mp.notes]) np.push(v[mp.notes]); rows.push({ name: nm, company: company || "", ig: ig, email: email, youtube: youtube, website: v[mp.website] || "", linkedin: linkedin || "", notes: np.join(" ") || "", stage: "new", current_step: 0, nurture_step: 0, created_at: todayStr(), next_follow_up: todayStr(), pipeline_value: parseFloat(v[mp.pv]) || 0, assigned_to: "", outreach_sequence: seq || "Default", nurture_sequence: "Default", history: [], nurture_history: [] }); } if (rows.length > 0) { const { error } = await supabase.from("contacts").insert(rows); if (!error) { flash(`Imported ${rows.length} leads${skipped > 0 ? ` (${skipped} duplicates skipped)` : ""}!`); logActivity(user, "imported_csv", `${rows.length} leads`); } else flash("Import error", "error"); } else if (skipped > 0) { flash(`All ${skipped} leads already exist`, "error"); } setModal(null); };
+  const importCSV = async (text, seq) => {
+    const lines = text.trim().split("\n");
+    if (lines.length < 2) return flash("No data", "error");
+    const hdr = lines[0].split(",").map(h => h.trim().toLowerCase().replace(/['"]/g, ""));
+    const mp = {};
+    hdr.forEach((h, i) => {
+      if (h === "first name") mp.firstName = i;
+      else if (h === "last name") mp.lastName = i;
+      else if (h === "name" || h === "full name") mp.name = i;
+      else if (h === "company name" || h === "company") mp.company = i;
+      else if (h === "title" || h === "job title" || h === "position") mp.title = i;
+      else if (h === "email" || h === "email address") mp.email = i;
+      else if (h === "person linkedin url" || h === "linkedin" || h === "linkedin url") mp.linkedin = i;
+      else if (h.includes("instagram") || h === "ig") mp.ig = i;
+      else if (h === "website" || h === "company website" || h === "url" || h === "site") mp.website = i;
+      else if (h.includes("youtube") || h === "yt") mp.youtube = i;
+      else if (h === "notes" || h === "note") mp.notes = i;
+      else if (h.includes("value") || h.includes("deal") || h === "pipeline") mp.pv = i;
+      else if (h === "assigned to" || h === "owner") mp.assign = i;
+    });
+    const hasName = mp.name !== undefined || mp.firstName !== undefined;
+    if (!hasName) return flash("Need a 'Name' or 'First Name' column", "error");
+
+    const rows = [];
+    let skippedExisting = 0;
+    let skippedInBatch = 0;
+
+    for (let i = 1; i < lines.length; i++) {
+      const v = []; let inQ = false; let cur = "";
+      for (let j = 0; j < lines[i].length; j++) {
+        const ch = lines[i][j];
+        if (ch === '"') { inQ = !inQ; }
+        else if (ch === ',' && !inQ) { v.push(cur.trim()); cur = ""; }
+        else { cur += ch; }
+      }
+      v.push(cur.trim());
+
+      let nm = "";
+      if (mp.firstName !== undefined) { nm = `${v[mp.firstName] || ""} ${v[mp.lastName] || ""}`.trim(); }
+      else { nm = v[mp.name] || ""; }
+      if (!nm) continue;
+
+      const email = v[mp.email] || "";
+      const title = v[mp.title] || "";
+      const company = v[mp.company] || "";
+      const linkedin = v[mp.linkedin] || "";
+      const ig = v[mp.ig] || "";
+      const youtube = v[mp.youtube] || "";
+      const website = v[mp.website] || "";
+
+      const candidate = { name: nm, company, email, ig, linkedin, youtube, website };
+
+      // Check 1: against existing contacts in DB
+      const dupExisting = findDuplicate(candidate);
+      if (dupExisting) { skippedExisting++; continue; }
+
+      // Check 2: against rows already queued in THIS batch
+      const dupInBatch = findDuplicate(candidate, rows);
+      if (dupInBatch) { skippedInBatch++; continue; }
+
+      const np = []; if (title) np.push(title); if (v[mp.notes]) np.push(v[mp.notes]);
+      rows.push({
+        name: nm, company: company || "", ig, email, youtube, website,
+        linkedin: linkedin || "", notes: np.join(" ") || "",
+        stage: "new", current_step: 0, nurture_step: 0,
+        created_at: todayStr(), next_follow_up: todayStr(),
+        pipeline_value: parseFloat(v[mp.pv]) || 0,
+        assigned_to: "", outreach_sequence: seq || "Default",
+        nurture_sequence: "Default", history: [], nurture_history: []
+      });
+    }
+
+    if (rows.length > 0) {
+      const { error } = await supabase.from("contacts").insert(rows);
+      if (!error) {
+        const skipMsg = (skippedExisting + skippedInBatch) > 0
+          ? ` (${skippedExisting} already in CRM${skippedInBatch > 0 ? `, ${skippedInBatch} duplicates within file` : ""} skipped)`
+          : "";
+        flash(`Imported ${rows.length} leads${skipMsg}!`);
+        logActivity(user, "imported_csv", `${rows.length} leads (${skippedExisting + skippedInBatch} dups skipped)`);
+      } else {
+        flash("Import error: " + error.message, "error");
+      }
+    } else {
+      const totalSkipped = skippedExisting + skippedInBatch;
+      if (totalSkipped > 0) flash(`All ${totalSkipped} leads were duplicates. Nothing imported.`, "error");
+      else flash("No valid leads found in CSV", "error");
+    }
+    setModal(null);
+  };
 
   // === VICTORY ROYALE SYSTEM ===
   // Calculate winners for a specific week (using all KPI entries data)
@@ -406,6 +517,38 @@ export default function CRM() {
       }
     }
   }, [loading, contacts.length, messages.length]);
+
+  // === DUPLICATE FINDER ===
+  // Group contacts by their potential duplicate-match keys, return groups with 2+ members
+  const findDuplicateGroups = () => {
+    const groups = new Map();
+    const addToGroup = (key, contact) => {
+      if (!key) return;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(contact);
+    };
+    contacts.forEach(c => {
+      const e = norm(c.email); if (e) addToGroup(`email:${e}`, c);
+      const i = norm(c.ig); if (i) addToGroup(`ig:${i}`, c);
+      const l = norm(c.linkedin); if (l) addToGroup(`linkedin:${l}`, c);
+      const y = norm(c.youtube); if (y) addToGroup(`youtube:${y}`, c);
+      const w = norm(c.website); if (w) addToGroup(`website:${w}`, c);
+      const n = normName(c.name); const co = normName(c.company);
+      if (n) addToGroup(`name:${n}|${co}`, c);
+    });
+    // Filter to only groups with 2+ contacts, dedupe contacts that appear in multiple groups
+    const seen = new Set();
+    const result = [];
+    for (const [key, list] of groups.entries()) {
+      if (list.length < 2) continue;
+      // Only show if this contact group hasn't been shown yet (use the smallest ID combo as fingerprint)
+      const ids = list.map(c => c.id).sort().join(",");
+      if (seen.has(ids)) continue;
+      seen.add(ids);
+      result.push({ key, matchedOn: key.split(":")[0], contacts: list });
+    }
+    return result;
+  };
 
   // === STANDUP FEED DATA (Yesterday's recap) ===
   const getYesterdayRecap = () => {
@@ -1116,7 +1259,7 @@ export default function CRM() {
         {view === "activity" && <ActivityView />}
         {view === "finder" && <LeadFinder />}
         {view === "myleads" && (() => { const my = contacts.filter(c => c.assigned_to === user); const unassigned = contacts.filter(c => !c.assigned_to && c.stage === "new"); const over = my.filter(c => urgency(c) < 0 && !["booked", "closed", "lost"].includes(c.stage)).sort((a, b) => urgency(a) - urgency(b)); const today2 = my.filter(c => urgency(c) === 0 && !["booked", "closed", "lost"].includes(c.stage)); const upcoming = my.filter(c => { const u2 = urgency(c); return u2 > 0 && u2 <= 7 && !["booked", "closed", "lost"].includes(c.stage); }).sort((a, b) => urgency(a) - urgency(b)); const interested = my.filter(c => c.stage === "interested"); const booked = my.filter(c => c.stage === "booked"); const closed = my.filter(c => c.stage === "closed"); const lost = my.filter(c => c.stage === "lost"); return (<div style={S.content}><div style={S.header}><div><h1 style={S.h1}>My Leads</h1><p style={S.sub}>{user}&apos;s leads and daily actions</p></div><button style={S.pri} onClick={() => setModal({ type: "contact", data: null })}>+ Add Lead</button></div>{over.length > 0 && <div style={{ marginBottom: 16 }}><h2 style={{ ...S.h2, color: "#EF4444" }}>Overdue ({over.length})</h2><Table data={over} /></div>}{today2.length > 0 && <div style={{ marginBottom: 16 }}><h2 style={{ ...S.h2, color: "#F59E0B" }}>Due Today ({today2.length})</h2><Table data={today2} /></div>}{upcoming.length > 0 && <div style={{ marginBottom: 16 }}><h2 style={{ ...S.h2, color: "#3B82F6" }}>Upcoming This Week ({upcoming.length})</h2><Table data={upcoming} /></div>}{interested.length > 0 && <div style={{ marginBottom: 16 }}><h2 style={{ ...S.h2, color: "#06B6D4" }}>💬 Interested ({interested.length})</h2><Table data={interested} /></div>}{booked.length > 0 && <div style={{ marginBottom: 16 }}><h2 style={{ ...S.h2, color: "#F59E0B" }}>📞 Calls Booked ({booked.length})</h2><Table data={booked} /></div>}{closed.length > 0 && <div style={{ marginBottom: 16 }}><h2 style={{ ...S.h2, color: "#10B981" }}>🎉 Closed Won ({closed.length})</h2><Table data={closed} /></div>}{lost.length > 0 && <div style={{ marginBottom: 16 }}><h2 style={{ ...S.h2, color: "#EF4444" }}>Lost ({lost.length})</h2><Table data={lost} /></div>}{unassigned.length > 0 && <div style={{ marginBottom: 16 }}><h2 style={{ ...S.h2, color: "#6C7A89" }}>Unassigned ({unassigned.length})</h2><p style={{ color: "#64748B", fontSize: 11, marginBottom: 8 }}>Send the first message to claim these leads</p><Table data={unassigned} showWho /></div>}{over.length === 0 && today2.length === 0 && upcoming.length === 0 && interested.length === 0 && booked.length === 0 && closed.length === 0 && unassigned.length === 0 && <div style={S.empty}><p style={{ color: "#64748B" }}>All caught up!</p></div>}{detailId && <Detail />}</div>); })()}
-        {view === "contacts" && (<div style={S.content}><div style={S.header}><div><h1 style={S.h1}>All Leads</h1><p style={S.sub}>{filtered.length} lead{filtered.length !== 1 ? "s" : ""}</p></div><div style={{ display: "flex", gap: 6 }}>{selected.size > 0 && <button style={S.danger} onClick={bulkDelete}>Delete {selected.size} Selected</button>}<button style={S.ghost} onClick={() => setModal({ type: "csv" })}>📤 Import CSV</button><button style={S.pri} onClick={() => setModal({ type: "contact", data: null })}>+ Add Lead</button></div></div><div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}><div style={S.sBox}><input style={S.sInp} placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} /></div><div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}><button style={{ ...S.pill, ...(filter === "all" ? S.pillOn : {}) }} onClick={() => setFilter("all")}>All</button>{STAGES.map(s => <button key={s.id} style={{ ...S.pill, ...(filter === s.id ? S.pillOn : {}) }} onClick={() => setFilter(s.id)}>{s.label} <span style={{ opacity: .5 }}>{contacts.filter(c => c.stage === s.id).length}</span></button>)}</div></div>{filtered.length === 0 ? <div style={S.empty}><p style={{ color: "#64748B" }}>No leads found.</p></div> : <Table data={filtered} showWho />}{detailId && <Detail />}</div>)}
+        {view === "contacts" && (<div style={S.content}><div style={S.header}><div><h1 style={S.h1}>All Leads</h1><p style={S.sub}>{filtered.length} lead{filtered.length !== 1 ? "s" : ""}</p></div><div style={{ display: "flex", gap: 6 }}>{selected.size > 0 && <button style={S.danger} onClick={bulkDelete}>Delete {selected.size} Selected</button>}<button style={S.ghost} onClick={() => setModal({ type: "dupes" })}>🔍 Find Duplicates</button><button style={S.ghost} onClick={() => setModal({ type: "csv" })}>📤 Import CSV</button><button style={S.pri} onClick={() => setModal({ type: "contact", data: null })}>+ Add Lead</button></div></div><div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}><div style={S.sBox}><input style={S.sInp} placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} /></div><div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}><button style={{ ...S.pill, ...(filter === "all" ? S.pillOn : {}) }} onClick={() => setFilter("all")}>All</button>{STAGES.map(s => <button key={s.id} style={{ ...S.pill, ...(filter === s.id ? S.pillOn : {}) }} onClick={() => setFilter(s.id)}>{s.label} <span style={{ opacity: .5 }}>{contacts.filter(c => c.stage === s.id).length}</span></button>)}</div></div>{filtered.length === 0 ? <div style={S.empty}><p style={{ color: "#64748B" }}>No leads found.</p></div> : <Table data={filtered} showWho />}{detailId && <Detail />}</div>)}
         {view === "messages" && <MsgView type="outreach" />}
         {view === "nurture" && <MsgView type="nurture" />}
       </div>
@@ -1124,6 +1267,7 @@ export default function CRM() {
       {modal?.type === "contact" && <ContactModal c={modal.data} team={TEAM} user={user} outreachSeqs={getSequences("outreach")} nurtureSeqs={getSequences("nurture")} onClose={() => setModal(null)} onSave={async d => { if (modal.data) await updateContact(modal.data.id, d); else await addContact(d); setModal(null); }} />}
       {modal?.type === "msg" && <MsgModal m={modal.data} total={(modal.msgType === "outreach" ? messages : nurtureM).filter(m => (m.sequence_name || "Default") === (modal.seqName || "Default")).length} type={modal.msgType} seqName={modal.seqName || "Default"} onClose={() => setModal(null)} onSave={async d => { if (modal.data) await updateMsg(modal.data.id, d); else await addMsg(d, modal.msgType); setModal(null); }} />}
       {modal?.type === "csv" && <CSVModal onClose={() => setModal(null)} onImport={importCSV} />}
+      {modal?.type === "dupes" && <DupesModal groups={findDuplicateGroups()} onClose={() => setModal(null)} onDelete={async (ids) => { await supabase.from("contacts").delete().in("id", ids); flash(`Deleted ${ids.length} duplicate(s)`, "info"); }} fmtEU={fmtEU} />}
       {modal?.type === "kpi" && <KpiSettingsModal targets={kpiTargets} onClose={() => setModal(null)} onSave={updateKpiTarget} />}
       {closeId && <CloseModal c={contacts.find(x => x.id === closeId)} onClose={() => setCloseId(null)} onSave={v => closeDeal(closeId, v)} />}
       {delId && <div style={S.ov} onClick={() => setDelId(null)}><div style={S.cBox} onClick={e => e.stopPropagation()}><h3 style={{ color: "#F1F5F9", fontSize: 15, fontWeight: 600, margin: 0 }}>Delete this lead?</h3><p style={{ color: "#94A3B8", fontSize: 13, margin: "6px 0 14px" }}>Can&apos;t be undone.</p><div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}><button style={S.ghost} onClick={() => setDelId(null)}>Cancel</button><button style={S.danger} onClick={() => deleteContact(delId)}>Delete</button></div></div></div>}
@@ -1134,6 +1278,102 @@ export default function CRM() {
 function ContactModal({ c, team, user, outreachSeqs, nurtureSeqs, onClose, onSave }) { const [f, setF] = useState({ name: c?.name || "", company: c?.company || "", ig: c?.ig || "", email: c?.email || "", youtube: c?.youtube || "", website: c?.website || "", linkedin: c?.linkedin || "", notes: c?.notes || "", pipeline_value: c?.pipeline_value || "", assigned_to: c?.assigned_to || "", outreach_sequence: c?.outreach_sequence || "Default", nurture_sequence: c?.nurture_sequence || "Default", current_step: c?.current_step || 0 }); const ref = useRef(null); useEffect(() => { ref.current?.focus(); }, []); const save = () => { if (!f.name.trim()) return; onSave({ ...f, pipeline_value: parseFloat(f.pipeline_value) || 0, current_step: parseInt(f.current_step) || 0 }); }; return (<div style={S.ov} onClick={onClose}><div style={S.modal} onClick={e => e.stopPropagation()}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}><h2 style={{ color: "#F1F5F9", fontSize: 17, fontWeight: 700, fontFamily: "'Outfit',sans-serif", margin: 0 }}>{c ? "Edit Lead" : "Add New Lead"}</h2><button style={S.x} onClick={onClose}>✕</button></div><div style={S.fg2}><div style={S.fi}><label style={S.lb}>Name *</label><input ref={ref} style={S.ip} value={f.name} onChange={e => setF({ ...f, name: e.target.value })} placeholder="John Smith" onKeyDown={e => e.key === "Enter" && save()} /></div><div style={S.fi}><label style={S.lb}>Company / Offer</label><input style={S.ip} value={f.company} onChange={e => setF({ ...f, company: e.target.value })} placeholder="Acme Inc." /></div>{c && <div style={S.fi}><label style={S.lb}>Assigned To</label><select style={S.ip} value={f.assigned_to} onChange={e => setF({ ...f, assigned_to: e.target.value })}><option value="">Unassigned</option>{team.map(t => <option key={t} value={t}>{t}</option>)}</select></div>}<div style={S.fi}><label style={S.lb}>Instagram</label><input style={S.ip} value={f.ig} onChange={e => setF({ ...f, ig: e.target.value })} placeholder="@handle" /></div><div style={S.fi}><label style={S.lb}>Email</label><input style={S.ip} value={f.email} onChange={e => setF({ ...f, email: e.target.value })} placeholder="john@email.com" /></div><div style={S.fi}><label style={S.lb}>LinkedIn</label><input style={S.ip} value={f.linkedin} onChange={e => setF({ ...f, linkedin: e.target.value })} placeholder="https://linkedin.com/in/..." /></div><div style={S.fi}><label style={S.lb}>YouTube</label><input style={S.ip} value={f.youtube} onChange={e => setF({ ...f, youtube: e.target.value })} placeholder="Channel URL" /></div><div style={S.fi}><label style={S.lb}>Website</label><input style={S.ip} value={f.website} onChange={e => setF({ ...f, website: e.target.value })} placeholder="https://..." /></div><div style={S.fi}><label style={S.lb}>Pipeline Value ($)</label><input style={S.ip} type="number" value={f.pipeline_value} onChange={e => setF({ ...f, pipeline_value: e.target.value })} placeholder="5000" /></div><div style={S.fi}><label style={S.lb}>Outreach Sequence</label><select style={S.ip} value={f.outreach_sequence} onChange={e => setF({ ...f, outreach_sequence: e.target.value })}>{(outreachSeqs || ["Default"]).map(s => <option key={s} value={s}>{s}</option>)}</select></div>{c && <div style={S.fi}><label style={S.lb}>Current Step (0 = reset)</label><input style={S.ip} type="number" min="0" value={f.current_step} onChange={e => setF({ ...f, current_step: e.target.value })} /></div>}<div style={{ ...S.fi, gridColumn: "1/-1" }}><label style={S.lb}>Notes</label><textarea style={{ ...S.ip, minHeight: 60, resize: "vertical" }} value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} placeholder="Notes..." /></div></div><div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 16 }}><button style={S.ghost} onClick={onClose}>Cancel</button><button style={{ ...S.pri, opacity: f.name.trim() ? 1 : .5 }} onClick={save} disabled={!f.name.trim()}>{c ? "Save" : "Add Lead"}</button></div></div></div>); }
 
 function MsgModal({ m, total, type, seqName, onClose, onSave }) { const [f, setF] = useState({ name: m?.name || `${type === "nurture" ? "Nurture" : "Message"} ${total + 1}`, channel: m?.channel || "ig", delay_days: m?.delay_days ?? 3, body: m?.body || "", sequence_name: m?.sequence_name || seqName || "Default", variants: m?.variants || [] }); const addVariant = () => { const labels = "BCDEFGHIJ"; const next = labels[f.variants.length] || `V${f.variants.length + 2}`; setF({ ...f, variants: [...f.variants, { label: next, body: "" }] }); }; const updateVariant = (idx, body) => { const vs = [...f.variants]; vs[idx] = { ...vs[idx], body }; setF({ ...f, variants: vs }); }; const removeVariant = (idx) => { setF({ ...f, variants: f.variants.filter((_, i) => i !== idx) }); }; return (<div style={S.ov} onClick={onClose}><div style={{ ...S.modal, maxWidth: 600 }} onClick={e => e.stopPropagation()}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}><h2 style={{ color: "#F1F5F9", fontSize: 17, fontWeight: 700, fontFamily: "'Outfit',sans-serif", margin: 0 }}>{m ? "Edit" : "Add"} Message</h2><button style={S.x} onClick={onClose}>\u2715</button></div><div style={S.fg2}><div style={S.fi}><label style={S.lb}>Name</label><input style={S.ip} value={f.name} onChange={e => setF({ ...f, name: e.target.value })} /></div><div style={S.fi}><label style={S.lb}>Channel</label><select style={S.ip} value={f.channel} onChange={e => setF({ ...f, channel: e.target.value })}><option value="ig">Instagram DM</option><option value="email">Email</option></select></div><div style={S.fi}><label style={S.lb}>Delay (days)</label><input style={S.ip} type="number" min="0" value={f.delay_days} onChange={e => setF({ ...f, delay_days: parseInt(e.target.value) || 0 })} /></div><div style={{ ...S.fi, gridColumn: "1/-1" }}><label style={S.lb}>Version A (default)</label><textarea style={{ ...S.ip, minHeight: 100, resize: "vertical" }} value={f.body} onChange={e => setF({ ...f, body: e.target.value })} placeholder={'Use {{name}} for auto-fill'} /></div>{f.variants.map((v, i) => (<div key={i} style={{ ...S.fi, gridColumn: "1/-1" }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><label style={{ ...S.lb, color: "#F59E0B" }}>Version {v.label}</label><button onClick={() => removeVariant(i)} style={{ background: "none", border: "none", color: "#EF4444", cursor: "pointer", fontSize: 11, fontFamily: "'DM Sans',sans-serif" }}>Remove</button></div><textarea style={{ ...S.ip, minHeight: 100, resize: "vertical", borderColor: "#F59E0B30" }} value={v.body} onChange={e => updateVariant(i, e.target.value)} placeholder={'Version ' + v.label + ' copy...'} /></div>))}<div style={{ gridColumn: "1/-1" }}><button style={{ ...S.ghost, width: "100%", borderStyle: "dashed" }} onClick={addVariant}>+ Add Variant for A/B Test</button></div></div><p style={{ color: "#475569", fontSize: 10, marginTop: 8 }}>{'{{name}}'} auto-fills with lead&apos;s first name. When copied, a random version is selected and tracked.</p><div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 16 }}><button style={S.ghost} onClick={onClose}>Cancel</button><button style={S.pri} onClick={() => onSave(f)}>{m ? "Save" : "Add"}</button></div></div></div>); }
+
+function DupesModal({ groups, onClose, onDelete, fmtEU }) {
+  const [keepers, setKeepers] = useState({}); // groupKey -> id of contact to keep
+
+  const matchLabels = {
+    email: "📧 Same email",
+    ig: "📱 Same Instagram",
+    linkedin: "💼 Same LinkedIn",
+    youtube: "📺 Same YouTube",
+    website: "🌐 Same website",
+    name: "👤 Same name",
+  };
+
+  const setKeeper = (groupKey, id) => setKeepers(p => ({ ...p, [groupKey]: id }));
+
+  const deleteOthers = async (group) => {
+    const keeperId = keepers[group.key] || group.contacts[0].id;
+    const toDelete = group.contacts.filter(c => c.id !== keeperId).map(c => c.id);
+    if (toDelete.length === 0) return;
+    await onDelete(toDelete);
+  };
+
+  const deleteAllExtras = async () => {
+    const allToDelete = [];
+    groups.forEach(group => {
+      const keeperId = keepers[group.key] || group.contacts[0].id;
+      group.contacts.forEach(c => { if (c.id !== keeperId) allToDelete.push(c.id); });
+    });
+    if (allToDelete.length === 0) return;
+    if (!confirm(`Delete ${allToDelete.length} duplicate leads? The "kept" lead in each group stays. This can't be undone.`)) return;
+    await onDelete(allToDelete);
+    onClose();
+  };
+
+  return (
+    <div style={S.ov} onClick={onClose}>
+      <div style={{ ...S.modal, maxWidth: 700 }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <h2 style={{ color: "#F1F5F9", fontSize: 17, fontWeight: 700, fontFamily: "'Outfit',sans-serif", margin: 0 }}>🔍 Duplicate Leads</h2>
+          <button style={S.x} onClick={onClose}>✕</button>
+        </div>
+        {groups.length === 0 ? (
+          <div style={{ padding: 30, textAlign: "center" }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>✨</div>
+            <p style={{ color: "#10B981", fontSize: 14, fontWeight: 600, margin: 0 }}>No duplicates found!</p>
+            <p style={{ color: "#64748B", fontSize: 12, marginTop: 4 }}>Your CRM is clean.</p>
+          </div>
+        ) : (
+          <>
+            <p style={{ color: "#94A3B8", fontSize: 12, marginBottom: 14 }}>
+              Found <strong style={{ color: "#F59E0B" }}>{groups.length}</strong> group{groups.length !== 1 ? "s" : ""} of duplicate leads. Pick which one to keep in each group, then delete the rest.
+            </p>
+            <div style={{ maxHeight: "55vh", overflow: "auto", display: "flex", flexDirection: "column", gap: 10 }}>
+              {groups.map(group => {
+                const keeperId = keepers[group.key] || group.contacts[0].id;
+                return (
+                  <div key={group.key} style={{ padding: 10, background: "#0B1120", borderRadius: 8, border: "1px solid #1E293B" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: "#F59E0B", textTransform: "uppercase" }}>{matchLabels[group.matchedOn] || group.matchedOn}</span>
+                      <button onClick={() => deleteOthers(group)} style={{ ...S.danger, padding: "4px 10px", fontSize: 10 }}>Delete {group.contacts.length - 1} extras</button>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      {group.contacts.map(c => (
+                        <label key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", background: keeperId === c.id ? "#10B98115" : "#0F172A", borderRadius: 6, border: keeperId === c.id ? "1px solid #10B98140" : "1px solid #1E293B", cursor: "pointer" }}>
+                          <input type="radio" name={group.key} checked={keeperId === c.id} onChange={() => setKeeper(group.key, c.id)} style={{ accentColor: "#10B981" }} />
+                          <div style={{ flex: 1 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              <span style={{ color: "#F1F5F9", fontWeight: 600, fontSize: 12 }}>{c.name}</span>
+                              {keeperId === c.id && <span style={{ fontSize: 9, fontWeight: 700, color: "#10B981" }}>KEEP</span>}
+                              {c.assigned_to && <span style={{ fontSize: 10, color: "#64748B" }}>· {c.assigned_to}</span>}
+                              {c.stage && <span style={{ fontSize: 10, color: "#64748B" }}>· {c.stage}</span>}
+                            </div>
+                            <div style={{ fontSize: 10, color: "#64748B" }}>
+                              {c.company && <span>{c.company} · </span>}
+                              {c.email && <span>{c.email} · </span>}
+                              {c.ig && <span>{c.ig} · </span>}
+                              Added {fmtEU(c.created_at)}
+                            </div>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ display: "flex", gap: 6, justifyContent: "space-between", marginTop: 14, paddingTop: 12, borderTop: "1px solid #1E293B" }}>
+              <button style={S.ghost} onClick={onClose}>Close</button>
+              <button style={S.danger} onClick={deleteAllExtras}>Delete ALL Extras (keep selected from each group)</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function CSVModal({ onClose, onImport }) { const [text, setText] = useState(""); const ref = useRef(null); const handleFile = e => { const f = e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = ev => setText(ev.target.result); r.readAsText(f); }; return (<div style={S.ov} onClick={onClose}><div style={S.modal} onClick={e => e.stopPropagation()}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}><h2 style={{ color: "#F1F5F9", fontSize: 17, fontWeight: 700, fontFamily: "'Outfit',sans-serif", margin: 0 }}>Import CSV</h2><button style={S.x} onClick={onClose}>✕</button></div><p style={{ color: "#94A3B8", fontSize: 12, marginBottom: 12 }}>Upload a CSV from Google Sheets. Needs a &quot;Name&quot; column.</p><input type="file" accept=".csv,.txt" ref={ref} onChange={handleFile} style={{ display: "none" }} /><button style={{ ...S.ghost, width: "100%", padding: 12, marginBottom: 10, borderStyle: "dashed" }} onClick={() => ref.current?.click()}>{text ? "✓ File loaded!" : "📤 Choose CSV"}</button><textarea style={{ ...S.ip, width: "100%", minHeight: 80, resize: "vertical", fontSize: 11, boxSizing: "border-box" }} value={text} onChange={e => setText(e.target.value)} placeholder={"name,instagram,email\nJohn,@john,john@email.com"} /><div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 12 }}><button style={S.ghost} onClick={onClose}>Cancel</button><button style={{ ...S.pri, opacity: text.trim() ? 1 : .5 }} onClick={() => text.trim() && onImport(text)} disabled={!text.trim()}>Import</button></div></div></div>); }
 
