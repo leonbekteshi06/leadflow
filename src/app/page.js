@@ -1318,7 +1318,118 @@ function CRM({ auth }) {
     </div>);
   };
 
-  // === MAIN RENDER ===
+  // === ADMIN: MENTEES (approve + overview) ===
+  const AdminView = () => {
+    const [wsList, setWsList] = useState([]);
+    const [allowed, setAllowed] = useState([]);
+    const [emailInput, setEmailInput] = useState("");
+    const [loadingA, setLoadingA] = useState(true);
+    const [busy, setBusy] = useState(false);
+
+    const loadAdmin = async () => {
+      const [wsRes, memRes, profRes, keRes, cRes, aeRes] = await Promise.all([
+        supabase.from("workspaces").select("*").order("created_at"),
+        supabase.from("workspace_members").select("workspace_id, user_id"),
+        supabase.from("profiles").select("id, display_name"),
+        supabase.from("kpi_entries").select("workspace_id, count, date").gte("date", addDays(todayStr(), -30)),
+        supabase.from("contacts").select("workspace_id, last_contacted_at, created_at, stage"),
+        supabase.from("allowed_emails").select("*").order("created_at", { ascending: false }),
+      ]);
+      const profMap = {}; (profRes.data || []).forEach(p => profMap[p.id] = p.display_name);
+      const ws = (wsRes.data || []).filter(w => w.id !== auth.ownWorkspaceId).map(w => {
+        const memberNames = (memRes.data || []).filter(m => m.workspace_id === w.id).map(m => profMap[m.user_id]).filter(Boolean);
+        const ke = (keRes.data || []).filter(e => e.workspace_id === w.id);
+        const weekAct = ke.filter(e => e.date >= weekStart()).reduce((s, e) => s + (e.count || 0), 0);
+        const monthAct = ke.reduce((s, e) => s + (e.count || 0), 0);
+        const cs = (cRes.data || []).filter(c => c.workspace_id === w.id);
+        const leadCount = cs.length;
+        const dates = [...ke.map(e => e.date), ...cs.map(c => c.last_contacted_at), ...cs.map(c => c.created_at)].filter(Boolean);
+        const lastActive = dates.length ? dates.sort().slice(-1)[0] : null;
+        const status = weekAct > 0 ? "green" : monthAct > 0 ? "amber" : "red";
+        return { ...w, memberNames, weekAct, leadCount, lastActive, status };
+      });
+      setWsList(ws);
+      setAllowed(aeRes.data || []);
+      setLoadingA(false);
+    };
+    useEffect(() => { loadAdmin(); }, []);
+
+    const addEmails = async () => {
+      const emails = emailInput.split(/[\n,;]+/).map(e => e.trim().toLowerCase()).filter(e => e.includes("@"));
+      if (!emails.length) { flash("Enter at least one valid email", "error"); return; }
+      setBusy(true);
+      const { error } = await supabase.from("allowed_emails").upsert(emails.map(e => ({ email: e, status: "pending" })), { onConflict: "email", ignoreDuplicates: true });
+      setBusy(false);
+      if (error) flash("Error: " + error.message, "error"); else { flash(`Approved ${emails.length} email${emails.length !== 1 ? "s" : ""}`); setEmailInput(""); loadAdmin(); }
+    };
+    const removeEmail = async (id, email) => { if (!confirm(`Remove ${email} from the approved list? If they haven't signed up yet, they won't be able to.`)) return; await supabase.from("allowed_emails").delete().eq("id", id); loadAdmin(); };
+
+    const statusColor = { green: "#10B981", amber: "#F59E0B", red: "#EF4444" };
+    const statusLabel = { green: "Active this week", amber: "Quiet this week", red: "No activity yet" };
+
+    return (<div style={S.content}>
+      <div style={S.header}><div><h1 style={S.h1}>Mentees</h1><p style={S.sub}>Approve access and track everyone&apos;s progress</p></div></div>
+
+      {/* Approve access */}
+      <div style={{ marginBottom: 24 }}>
+        <h2 style={S.h2}>Approve a mentee</h2>
+        <div style={{ background: "#0F172A", borderRadius: 10, border: "1px solid #1E293B", padding: 14 }}>
+          <p style={{ color: "#94A3B8", fontSize: 12, marginBottom: 10 }}>Paste one or more emails (one per line). They&apos;ll be able to sign up and get their own empty workspace. Only emails on this list can get in.</p>
+          <textarea value={emailInput} onChange={e => setEmailInput(e.target.value)} placeholder={"mentee1@email.com\nmentee2@email.com"} style={{ ...S.ip, width: "100%", minHeight: 70, resize: "vertical", boxSizing: "border-box", marginBottom: 10 }} />
+          <button style={{ ...S.pri, opacity: busy ? 0.6 : 1 }} onClick={addEmails} disabled={busy}>{busy ? "Adding..." : "Approve access"}</button>
+
+          {allowed.length > 0 && (
+            <div style={{ marginTop: 14 }}>
+              <div style={{ fontSize: 10, color: "#64748B", fontWeight: 700, textTransform: "uppercase", marginBottom: 6 }}>Approved ({allowed.length})</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 200, overflow: "auto" }}>
+                {allowed.map(a => (
+                  <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 10px", background: "#0B1120", borderRadius: 6 }}>
+                    <span style={{ color: "#CBD5E1", fontSize: 12 }}>{a.email}</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4, background: a.status === "redeemed" ? "#10B98120" : "#F59E0B20", color: a.status === "redeemed" ? "#10B981" : "#F59E0B" }}>{a.status === "redeemed" ? "JOINED" : "INVITED"}</span>
+                      <button onClick={() => removeEmail(a.id, a.email)} style={{ ...S.act, color: "#EF4444", padding: "3px 7px" }}>✕</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Overview scoreboard */}
+      <h2 style={S.h2}>Progress</h2>
+      {loadingA ? <div style={S.empty}><p style={{ color: "#64748B" }}>Loading...</p></div>
+        : wsList.length === 0 ? <div style={S.empty}><p style={{ color: "#64748B" }}>No mentees yet. Approve an email above, and once they sign up they&apos;ll show here.</p></div>
+        : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 10 }}>
+            {wsList.map(w => (
+              <div key={w.id} onClick={() => auth.onEnterWorkspace(w.id, w.workspaceName || w.name)} style={{ padding: 14, background: "#0F172A", borderRadius: 12, border: "1px solid #1E293B", borderTop: `3px solid ${statusColor[w.status]}`, cursor: "pointer" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ color: "#F1F5F9", fontWeight: 700, fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{w.memberNames[0] || w.name}</div>
+                    <div style={{ color: "#64748B", fontSize: 10 }}>{w.name}</div>
+                  </div>
+                  <span style={{ width: 9, height: 9, borderRadius: "50%", background: statusColor[w.status], flexShrink: 0, marginTop: 4 }} title={statusLabel[w.status]} />
+                </div>
+                <div style={{ display: "flex", gap: 14, marginBottom: 8 }}>
+                  <div><div style={{ color: "#F1F5F9", fontSize: 18, fontWeight: 700, fontFamily: "'Outfit',sans-serif" }}>{w.weekAct}</div><div style={{ color: "#64748B", fontSize: 9, fontWeight: 600, textTransform: "uppercase" }}>This week</div></div>
+                  <div><div style={{ color: "#F1F5F9", fontSize: 18, fontWeight: 700, fontFamily: "'Outfit',sans-serif" }}>{w.leadCount}</div><div style={{ color: "#64748B", fontSize: 9, fontWeight: 600, textTransform: "uppercase" }}>Leads</div></div>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ color: statusColor[w.status], fontSize: 10, fontWeight: 600 }}>{statusLabel[w.status]}</span>
+                  <span style={{ color: "#64748B", fontSize: 10 }}>{w.lastActive ? `last ${fmtEU(w.lastActive)}` : "never"}</span>
+                </div>
+                <button style={{ ...S.ghost, width: "100%", marginTop: 10, padding: "6px", fontSize: 12 }}>Open workspace →</button>
+              </div>
+            ))}
+          </div>
+        )}
+    </div>);
+  };
+
+  if (auth.isAdmin) NAV.push({ id: "admin", label: "Mentees", d: "M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" });
+
   return (
     <div style={S.app}>
       {toast && <div style={{ ...S.toast, background: toast.t === "error" ? "#EF4444" : toast.t === "info" ? "#3B82F6" : "#10B981" }}>{toast.m}</div>}
@@ -1330,6 +1441,8 @@ function CRM({ auth }) {
       </div>
 
       <div style={S.main}>
+        {auth.viewingMentee && <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 16px", background: "#C99A3B18", borderBottom: "1px solid #C99A3B40" }}><span style={{ color: "#E9C877", fontSize: 13, fontWeight: 600 }}>👁 Viewing {auth.viewingMentee}&apos;s workspace · anything you change affects their account</span><button onClick={() => { auth.onExitWorkspace(); setView("admin"); }} style={{ flexShrink: 0, background: "#C99A3B", border: "none", borderRadius: 7, color: "#1C3D2A", fontSize: 12, fontWeight: 700, padding: "6px 12px", cursor: "pointer", fontFamily: "inherit" }}>← Back to my view</button></div>}
+        {view === "admin" && auth.isAdmin && <AdminView />}
         {view === "dashboard" && (<div style={S.content}><div style={S.header}><div><h1 style={S.h1}>Dashboard</h1><p style={S.sub}>Welcome back, {user}</p></div><button style={S.pri} onClick={() => setModal({ type: "contact", data: null })}>+ Add Lead</button></div><StandupFeed /><div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(145px,1fr))", gap: 8, marginBottom: 20 }}>{[{ l: "Contacted This Week", v: stats.contactedWeek, c: "#3B82F6" }, { l: "Contacted This Month", v: stats.contactedMonth, c: "#6366F1" }, { l: "Pipeline Value", v: fmtMoney(stats.pipeline), c: "#10B981" }, { l: "Closed This Month", v: fmtMoney(stats.closedMonth), c: "#F59E0B" }, { l: "Total Revenue", v: fmtMoney(stats.closedTotal), c: "#10B981" }, { l: "Close Rate", v: `${stats.convRate}%`, c: "#8B5CF6" }].map((s, i) => (<div key={i} style={{ padding: 12, background: "#0F172A", borderRadius: 10, border: "1px solid #1E293B", borderTop: `3px solid ${s.c}` }}><div style={{ color: "#64748B", fontSize: 10, fontWeight: 600, textTransform: "uppercase" }}>{s.l}</div><div style={{ color: "#F1F5F9", fontSize: 20, fontWeight: 700, fontFamily: "'Outfit',sans-serif", marginTop: 3 }}>{s.v}</div></div>))}</div><div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 6, marginBottom: 20 }}>{STAGES.map(s => { const cnt = contacts.filter(c => c.stage === s.id).length; return (<div key={s.id} style={{ padding: "12px 10px", background: "#0F172A", borderRadius: 8, border: "1px solid #1E293B", borderLeft: `3px solid ${s.color}`, cursor: "pointer" }} onClick={() => { setView("contacts"); setFilter(s.id); }}><div style={{ color: "#94A3B8", fontSize: 10, fontWeight: 600 }}>{s.label}</div><div style={{ color: "#F1F5F9", fontSize: 22, fontWeight: 700, fontFamily: "'Outfit',sans-serif" }}>{cnt}</div></div>); })}</div><h2 style={S.h2}>Today&apos;s Actions ({actionsDue.length})</h2>{actionsDue.length === 0 ? <div style={S.empty}><p style={{ color: "#64748B" }}>Nothing due!</p></div> : <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 20 }}>{actionsDue.sort((a, b) => urgency(a) - urgency(b)).map(c => { const isOver = urgency(c) < 0; const nm = getNext(c); const nn = getNextN(c); const isO = ["new", "outreach", "old"].includes(c.stage); const isLm = c.stage === "responded" && c.loom_pending; const msg = isLm ? null : isO ? nm : nn; const mt = isO ? "outreach" : "nurture"; return (<div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "#0F172A", borderRadius: 8, border: `1px solid ${isOver ? "#EF444430" : "#1E293B"}` }}><div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}><div style={{ width: 7, height: 7, borderRadius: "50%", background: isOver ? "#EF4444" : "#F59E0B", flexShrink: 0 }} /><div><div style={{ color: "#F1F5F9", fontWeight: 500, fontSize: 13 }}>{c.name} <span style={{ color: "#64748B", fontSize: 11 }}>({c.assigned_to})</span></div><div style={{ color: "#64748B", fontSize: 11 }}>{isLm ? "🎥 Send Loom" : c.stage === "interested" ? "💬 Check in" : msg ? msg.name : "Action needed"}</div></div></div><div style={{ display: "flex", gap: 4 }}>{msg && <button style={S.sc} onClick={() => copy(c, mt)}>{copied === c.id + mt ? "Copied!" : "Copy"}</button>}</div></div>); })}</div>}<h2 style={S.h2}>Team</h2><div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8 }}>{TEAM.map(t => { const ml = contacts.filter(c => c.assigned_to === t); const ma = actionsDue.filter(c => c.assigned_to === t); const mc = ml.filter(c => c.stage === "closed").reduce((s, c) => s + (c.closed_value || 0), 0); return (<div key={t} style={{ padding: 12, background: "#0F172A", borderRadius: 10, border: `1px solid ${t === user ? "#3B82F640" : "#1E293B"}` }}><div style={{ color: "#F1F5F9", fontWeight: 600, fontSize: 14, marginBottom: 6 }}>{t}{t === user && <span style={{ color: "#3B82F6", fontSize: 10 }}> (you)</span>}</div><div style={{ display: "flex", flexDirection: "column", gap: 3 }}><div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}><span style={{ color: "#64748B" }}>Leads</span><span style={{ color: "#CBD5E1", fontWeight: 600 }}>{ml.length}</span></div><div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}><span style={{ color: "#64748B" }}>Due Today</span><span style={{ color: ma.length ? "#F59E0B" : "#CBD5E1", fontWeight: 600 }}>{ma.length}</span></div><div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}><span style={{ color: "#64748B" }}>Closed</span><span style={{ color: "#10B981", fontWeight: 600 }}>{fmtMoney(mc)}</span></div></div></div>); })}</div></div>)}
 
         {view === "kpis" && <KpiView />}
@@ -1725,7 +1838,16 @@ export default function App() {
     return () => sub?.subscription?.unsubscribe();
   }, []);
 
-  const logout = async () => { await supabase.auth.signOut(); setAuthed(false); setCtx(null); };
+  const [viewing, setViewing] = useState(null); // { workspaceId, workspaceName, members } when admin is inside a mentee space
+
+  const enterWorkspace = async (wsId, wsName) => {
+    const members = await loadMembers(wsId);
+    setViewing({ workspaceId: wsId, workspaceName: wsName, members: members.length ? members : ["(empty)"] });
+    if (typeof window !== "undefined") window.scrollTo(0, 0);
+  };
+  const exitWorkspace = () => setViewing(null);
+
+  const logout = async () => { await supabase.auth.signOut(); setAuthed(false); setCtx(null); setViewing(null); };
 
   if (booting) return (<div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "#0B1120" }}><div style={{ width: 32, height: 32, border: "3px solid #1E293B", borderTop: "3px solid #3B82F6", borderRadius: "50%", animation: "spin .8s linear infinite" }} /></div>);
 
@@ -1733,5 +1855,11 @@ export default function App() {
 
   if (!authed || !ctx) return <AuthScreen onDone={resolve} />;
 
-  return <CRM key={ctx.workspaceId} auth={{ ...ctx, onLogout: logout }} />;
+  // Build the context the CRM runs in: the admin's own space, or a mentee's space they're viewing
+  const active = viewing
+    ? { user: ctx.user, workspaceId: viewing.workspaceId, workspaceName: viewing.workspaceName, members: viewing.members, isAdmin: ctx.isAdmin }
+    : ctx;
+  const auth = { ...active, onLogout: logout, onEnterWorkspace: enterWorkspace, onExitWorkspace: exitWorkspace, viewingMentee: viewing ? viewing.workspaceName : null, ownWorkspaceId: ctx.workspaceId };
+
+  return <CRM key={active.workspaceId} auth={auth} />;
 }
