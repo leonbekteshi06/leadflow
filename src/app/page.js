@@ -68,15 +68,15 @@ function CRM({ auth }) {
   useEffect(() => {
     const load = async () => {
       const [cRes, mRes, ktRes, keRes, alRes, allKeRes, allAlRes, vRes, kcRes] = await Promise.all([
-        supabase.from("contacts").select("*").order("created_at", { ascending: false }),
-        supabase.from("message_templates").select("*").order("step"),
-        supabase.from("kpi_targets").select("*"),
-        supabase.from("kpi_entries").select("*").gte("date", addDays(todayStr(), -30)),
-        supabase.from("activity_log").select("*").order("created_at", { ascending: false }).limit(50),
-        supabase.from("kpi_entries").select("*").gte("date", addDays(todayStr(), -400)),
-        supabase.from("activity_log").select("*").gte("created_at", addDays(todayStr(), -400)).order("created_at", { ascending: false }),
-        supabase.from("weekly_victories").select("*").order("week_start", { ascending: false }),
-        supabase.from("kpi_categories").select("*").order("sort_order"),
+        supabase.from("contacts").select("*").eq("workspace_id", activeWs).order("created_at", { ascending: false }),
+        supabase.from("message_templates").select("*").eq("workspace_id", activeWs).order("step"),
+        supabase.from("kpi_targets").select("*").eq("workspace_id", activeWs),
+        supabase.from("kpi_entries").select("*").eq("workspace_id", activeWs).gte("date", addDays(todayStr(), -30)),
+        supabase.from("activity_log").select("*").eq("workspace_id", activeWs).order("created_at", { ascending: false }).limit(50),
+        supabase.from("kpi_entries").select("*").eq("workspace_id", activeWs).gte("date", addDays(todayStr(), -400)),
+        supabase.from("activity_log").select("*").eq("workspace_id", activeWs).gte("created_at", addDays(todayStr(), -400)).order("created_at", { ascending: false }),
+        supabase.from("weekly_victories").select("*").eq("workspace_id", activeWs).order("week_start", { ascending: false }),
+        supabase.from("kpi_categories").select("*").eq("workspace_id", activeWs).order("sort_order"),
       ]);
       if (cRes.data) setContacts(cRes.data);
       if (mRes.data) { setMessages(mRes.data.filter(m => m.type === "outreach")); setNurtureM(mRes.data.filter(m => m.type === "nurture")); }
@@ -92,19 +92,19 @@ function CRM({ auth }) {
     load();
 
     const subs = [
-      supabase.channel("c-ch").on("postgres_changes", { event: "*", schema: "public", table: "contacts" }, () => { supabase.from("contacts").select("*").order("created_at", { ascending: false }).then(({ data }) => { if (data) setContacts(data); }); }).subscribe(),
-      supabase.channel("m-ch").on("postgres_changes", { event: "*", schema: "public", table: "message_templates" }, () => { supabase.from("message_templates").select("*").order("step").then(({ data }) => { if (data) { setMessages(data.filter(m => m.type === "outreach")); setNurtureM(data.filter(m => m.type === "nurture")); } }); }).subscribe(),
-      supabase.channel("kt-ch").on("postgres_changes", { event: "*", schema: "public", table: "kpi_targets" }, () => { supabase.from("kpi_targets").select("*").then(({ data }) => { if (data) setKpiTargets(data); }); }).subscribe(),
-      supabase.channel("kc-ch").on("postgres_changes", { event: "*", schema: "public", table: "kpi_categories" }, () => { supabase.from("kpi_categories").select("*").order("sort_order").then(({ data }) => { if (data) setKpiCategories(data); }); }).subscribe(),
+      supabase.channel("c-ch").on("postgres_changes", { event: "*", schema: "public", table: "contacts" }, () => { supabase.from("contacts").select("*").eq("workspace_id", activeWs).order("created_at", { ascending: false }).then(({ data }) => { if (data) setContacts(data); }); }).subscribe(),
+      supabase.channel("m-ch").on("postgres_changes", { event: "*", schema: "public", table: "message_templates" }, () => { supabase.from("message_templates").select("*").eq("workspace_id", activeWs).order("step").then(({ data }) => { if (data) { setMessages(data.filter(m => m.type === "outreach")); setNurtureM(data.filter(m => m.type === "nurture")); } }); }).subscribe(),
+      supabase.channel("kt-ch").on("postgres_changes", { event: "*", schema: "public", table: "kpi_targets" }, () => { supabase.from("kpi_targets").select("*").eq("workspace_id", activeWs).then(({ data }) => { if (data) setKpiTargets(data); }); }).subscribe(),
+      supabase.channel("kc-ch").on("postgres_changes", { event: "*", schema: "public", table: "kpi_categories" }, () => { supabase.from("kpi_categories").select("*").eq("workspace_id", activeWs).order("sort_order").then(({ data }) => { if (data) setKpiCategories(data); }); }).subscribe(),
       supabase.channel("ke-ch").on("postgres_changes", { event: "*", schema: "public", table: "kpi_entries" }, () => {
-        supabase.from("kpi_entries").select("*").gte("date", addDays(todayStr(), -30)).then(({ data }) => { if (data) setKpiEntries(data); });
-        supabase.from("kpi_entries").select("*").gte("date", addDays(todayStr(), -400)).then(({ data }) => { if (data) setAllKpiEntries(data); });
+        supabase.from("kpi_entries").select("*").eq("workspace_id", activeWs).gte("date", addDays(todayStr(), -30)).then(({ data }) => { if (data) setKpiEntries(data); });
+        supabase.from("kpi_entries").select("*").eq("workspace_id", activeWs).gte("date", addDays(todayStr(), -400)).then(({ data }) => { if (data) setAllKpiEntries(data); });
       }).subscribe(),
       supabase.channel("al-ch").on("postgres_changes", { event: "*", schema: "public", table: "activity_log" }, () => {
-        supabase.from("activity_log").select("*").order("created_at", { ascending: false }).limit(50).then(({ data }) => { if (data) setActivityLog(data); });
-        supabase.from("activity_log").select("*").gte("created_at", addDays(todayStr(), -400)).order("created_at", { ascending: false }).then(({ data }) => { if (data) setAllActivityLog(data); });
+        supabase.from("activity_log").select("*").eq("workspace_id", activeWs).order("created_at", { ascending: false }).limit(50).then(({ data }) => { if (data) setActivityLog(data); });
+        supabase.from("activity_log").select("*").eq("workspace_id", activeWs).gte("created_at", addDays(todayStr(), -400)).order("created_at", { ascending: false }).then(({ data }) => { if (data) setAllActivityLog(data); });
       }).subscribe(),
-      supabase.channel("v-ch").on("postgres_changes", { event: "*", schema: "public", table: "weekly_victories" }, () => { supabase.from("weekly_victories").select("*").order("week_start", { ascending: false }).then(({ data }) => { if (data) setVictories(data); }); }).subscribe(),
+      supabase.channel("v-ch").on("postgres_changes", { event: "*", schema: "public", table: "weekly_victories" }, () => { supabase.from("weekly_victories").select("*").eq("workspace_id", activeWs).order("week_start", { ascending: false }).then(({ data }) => { if (data) setVictories(data); }); }).subscribe(),
     ];
     return () => subs.forEach(s => supabase.removeChannel(s));
   }, []);
@@ -278,9 +278,9 @@ function CRM({ auth }) {
     } else if (delta > 0) {
       await supabase.from("kpi_entries").insert({ person, category, count: delta, date, workspace_id: activeWs });
     }
-    const { data: fresh } = await supabase.from("kpi_entries").select("*").gte("date", addDays(todayStr(), -30));
+    const { data: fresh } = await supabase.from("kpi_entries").select("*").eq("workspace_id", activeWs).gte("date", addDays(todayStr(), -30));
     if (fresh) setKpiEntries(fresh);
-    const { data: freshAll } = await supabase.from("kpi_entries").select("*").gte("date", addDays(todayStr(), -400));
+    const { data: freshAll } = await supabase.from("kpi_entries").select("*").eq("workspace_id", activeWs).gte("date", addDays(todayStr(), -400));
     if (freshAll) setAllKpiEntries(freshAll);
     if (delta > 0) logActivity(person, "logged_kpi", `+${delta} ${category}`);
   };
@@ -299,7 +299,7 @@ function CRM({ auth }) {
   const deleteCategory = async (id) => { const c = kpiCategories.find(x => x.id === id); await supabase.from("kpi_categories").delete().eq("id", id); flash(`Removed "${c?.name}"`, "info"); };
   // Renaming also moves the logged history over so streaks/totals stay intact
   const renameCategory = async (id, oldName, newName) => {
-    if (oldName !== newName) await supabase.from("kpi_entries").update({ category: newName }).eq("category", oldName);
+    if (oldName !== newName) await supabase.from("kpi_entries").update({ category: newName }).eq("workspace_id", activeWs).eq("category", oldName);
     await supabase.from("kpi_categories").update({ name: newName }).eq("id", id);
   };
 
