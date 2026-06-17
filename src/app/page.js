@@ -40,6 +40,7 @@ export default function CRM() {
   const [messages, setMessages] = useState([]);
   const [nurtureM, setNurtureM] = useState([]);
   const [kpiTargets, setKpiTargets] = useState([]);
+  const [kpiCategories, setKpiCategories] = useState([]);
   const [kpiEntries, setKpiEntries] = useState([]);
   const [activityLog, setActivityLog] = useState([]);
   const [allKpiEntries, setAllKpiEntries] = useState([]);
@@ -66,7 +67,7 @@ export default function CRM() {
 
   useEffect(() => {
     const load = async () => {
-      const [cRes, mRes, ktRes, keRes, alRes, allKeRes, allAlRes, vRes] = await Promise.all([
+      const [cRes, mRes, ktRes, keRes, alRes, allKeRes, allAlRes, vRes, kcRes] = await Promise.all([
         supabase.from("contacts").select("*").order("created_at", { ascending: false }),
         supabase.from("message_templates").select("*").order("step"),
         supabase.from("kpi_targets").select("*"),
@@ -75,10 +76,12 @@ export default function CRM() {
         supabase.from("kpi_entries").select("*").gte("date", addDays(todayStr(), -400)),
         supabase.from("activity_log").select("*").gte("created_at", addDays(todayStr(), -400)).order("created_at", { ascending: false }),
         supabase.from("weekly_victories").select("*").order("week_start", { ascending: false }),
+        supabase.from("kpi_categories").select("*").order("sort_order"),
       ]);
       if (cRes.data) setContacts(cRes.data);
       if (mRes.data) { setMessages(mRes.data.filter(m => m.type === "outreach")); setNurtureM(mRes.data.filter(m => m.type === "nurture")); }
       if (ktRes.data) setKpiTargets(ktRes.data);
+      if (kcRes.data) setKpiCategories(kcRes.data);
       if (keRes.data) setKpiEntries(keRes.data);
       if (alRes.data) setActivityLog(alRes.data);
       if (allKeRes.data) setAllKpiEntries(allKeRes.data);
@@ -92,6 +95,7 @@ export default function CRM() {
       supabase.channel("c-ch").on("postgres_changes", { event: "*", schema: "public", table: "contacts" }, () => { supabase.from("contacts").select("*").order("created_at", { ascending: false }).then(({ data }) => { if (data) setContacts(data); }); }).subscribe(),
       supabase.channel("m-ch").on("postgres_changes", { event: "*", schema: "public", table: "message_templates" }, () => { supabase.from("message_templates").select("*").order("step").then(({ data }) => { if (data) { setMessages(data.filter(m => m.type === "outreach")); setNurtureM(data.filter(m => m.type === "nurture")); } }); }).subscribe(),
       supabase.channel("kt-ch").on("postgres_changes", { event: "*", schema: "public", table: "kpi_targets" }, () => { supabase.from("kpi_targets").select("*").then(({ data }) => { if (data) setKpiTargets(data); }); }).subscribe(),
+      supabase.channel("kc-ch").on("postgres_changes", { event: "*", schema: "public", table: "kpi_categories" }, () => { supabase.from("kpi_categories").select("*").order("sort_order").then(({ data }) => { if (data) setKpiCategories(data); }); }).subscribe(),
       supabase.channel("ke-ch").on("postgres_changes", { event: "*", schema: "public", table: "kpi_entries" }, () => {
         supabase.from("kpi_entries").select("*").gte("date", addDays(todayStr(), -30)).then(({ data }) => { if (data) setKpiEntries(data); });
         supabase.from("kpi_entries").select("*").gte("date", addDays(todayStr(), -400)).then(({ data }) => { if (data) setAllKpiEntries(data); });
@@ -160,7 +164,7 @@ export default function CRM() {
     else { flash(`Deleted ${done} lead${done !== 1 ? "s" : ""}`, "info"); logActivity(user, "bulk_deleted", `${done} leads`); }
   };
 
-  const markSent = async (id) => { const c = contacts.find(x => x.id === id); if (!c) return; const ns = (c.current_step || 0) + 1; const seq = c.outreach_sequence || "Default"; let seqMsgs = messages.filter(m => (m.sequence_name || "Default") === seq).sort((a, b) => a.step - b.step); if (seqMsgs.length === 0) seqMsgs = messages.filter(m => (m.sequence_name || "Default") === "Default").sort((a, b) => a.step - b.step); const cm = seqMsgs[c.current_step || 0]; const nm = seqMsgs[ns]; const pv = pendingVariants[id]; const variant = pv?.label || "A"; const isFirst = (c.current_step || 0) === 0; const isLoomSeq = seq.toLowerCase().includes("loom"); const kpiCat = isLoomSeq ? "Looms" : "DMs"; if (isFirst) { await logKpi(user, kpiCat, 1); } const upd = { current_step: ns, stage: ns > 0 && ["new", "old"].includes(c.stage) ? "outreach" : c.stage, last_contacted_at: todayStr(), next_follow_up: nm ? addDays(todayStr(), nm.delay_days) : null, history: [...(c.history || []), { step: ns, name: cm?.name || `Msg ${ns}`, variant, at: todayStr() }] }; if (isFirst || !c.assigned_to) upd.assigned_to = user; if (isFirst && !c.original_owner) { upd.original_owner = user; if (!c.cycle) upd.cycle = 1; } await updateContact(id, upd); setPendingVariants(p => { const n = { ...p }; delete n[id]; return n; }); logActivity(user, "sent_outreach", `${cm?.name} (v${variant}) to ${c.name}${c.cycle > 1 ? ` (cycle ${c.cycle})` : ""}`); flash(isFirst ? `Marked sent! (+1 ${kpiCat})` : "Marked sent!"); };
+  const markSent = async (id) => { const c = contacts.find(x => x.id === id); if (!c) return; const ns = (c.current_step || 0) + 1; const seq = c.outreach_sequence || "Default"; let seqMsgs = messages.filter(m => (m.sequence_name || "Default") === seq).sort((a, b) => a.step - b.step); if (seqMsgs.length === 0) seqMsgs = messages.filter(m => (m.sequence_name || "Default") === "Default").sort((a, b) => a.step - b.step); const cm = seqMsgs[c.current_step || 0]; const nm = seqMsgs[ns]; const pv = pendingVariants[id]; const variant = pv?.label || "A"; const isFirst = (c.current_step || 0) === 0; const isLoomSeq = seq.toLowerCase().includes("loom"); const kpiCat = isLoomSeq ? "Looms" : "DMs"; const kpiCatExists = kpiCategories.some(k => k.name === kpiCat); if (isFirst && kpiCatExists) { await logKpi(user, kpiCat, 1); } const upd = { current_step: ns, stage: ns > 0 && ["new", "old"].includes(c.stage) ? "outreach" : c.stage, last_contacted_at: todayStr(), next_follow_up: nm ? addDays(todayStr(), nm.delay_days) : null, history: [...(c.history || []), { step: ns, name: cm?.name || `Msg ${ns}`, variant, at: todayStr() }] }; if (isFirst || !c.assigned_to) upd.assigned_to = user; if (isFirst && !c.original_owner) { upd.original_owner = user; if (!c.cycle) upd.cycle = 1; } await updateContact(id, upd); setPendingVariants(p => { const n = { ...p }; delete n[id]; return n; }); logActivity(user, "sent_outreach", `${cm?.name} (v${variant}) to ${c.name}${c.cycle > 1 ? ` (cycle ${c.cycle})` : ""}`); flash(isFirst && kpiCatExists ? `Marked sent! (+1 ${kpiCat})` : "Marked sent!"); };
   const markNurtureSent = async (id) => { const c = contacts.find(x => x.id === id); if (!c) return; const ns = (c.nurture_step || 0) + 1; const seq = c.nurture_sequence || "Default"; let seqMsgs = nurtureM.filter(m => (m.sequence_name || "Default") === seq).sort((a, b) => a.step - b.step); if (seqMsgs.length === 0) seqMsgs = nurtureM.filter(m => (m.sequence_name || "Default") === "Default").sort((a, b) => a.step - b.step); const cm = seqMsgs[c.nurture_step || 0]; const nm = seqMsgs[ns]; await updateContact(id, { nurture_step: ns, last_contacted_at: todayStr(), next_nurture_date: nm ? addDays(todayStr(), nm.delay_days) : addDays(todayStr(), 7), nurture_history: [...(c.nurture_history || []), { step: ns, name: cm?.name || `N ${ns}`, at: todayStr() }] }); logActivity(user, "sent_nurture", `${cm?.name} to ${c.name}`); flash("Nurture sent!"); };
   const moveStage = async (id, stage) => {
     const c = contacts.find(x => x.id === id);
@@ -214,7 +218,7 @@ export default function CRM() {
     flash(`Moved to ${STAGES.find(s => s.id === stage)?.label}`);
   };
   const pingLead = async (id) => { const c = contacts.find(x => x.id === id); if (!c) return; await updateContact(id, { next_follow_up: addDays(todayStr(), 3), last_contacted_at: todayStr() }); logActivity(user, "pinged_lead", c.name); flash(`Pinged! Check in again in 3 days.`); };
-  const confirmLoom = async (id) => { const c = contacts.find(x => x.id === id); if (!c) return; const seq = c.nurture_sequence || "Default"; let seqMsgs = nurtureM.filter(m => (m.sequence_name || "Default") === seq).sort((a, b) => a.step - b.step); if (seqMsgs.length === 0) seqMsgs = nurtureM.filter(m => (m.sequence_name || "Default") === "Default").sort((a, b) => a.step - b.step); const firstMsg = seqMsgs[0]; const delay = firstMsg ? firstMsg.delay_days : 2; await logKpi(user, "Looms", 1); await updateContact(id, { loom_pending: false, next_follow_up: null, next_nurture_date: addDays(todayStr(), delay), last_contacted_at: todayStr() }); logActivity(user, "sent_loom", c.name); flash(`Loom sent! (+1 Looms) Nurture in ${delay}d.`); };
+  const confirmLoom = async (id) => { const c = contacts.find(x => x.id === id); if (!c) return; const seq = c.nurture_sequence || "Default"; let seqMsgs = nurtureM.filter(m => (m.sequence_name || "Default") === seq).sort((a, b) => a.step - b.step); if (seqMsgs.length === 0) seqMsgs = nurtureM.filter(m => (m.sequence_name || "Default") === "Default").sort((a, b) => a.step - b.step); const firstMsg = seqMsgs[0]; const delay = firstMsg ? firstMsg.delay_days : 2; const loomExists = kpiCategories.some(k => k.name === "Looms"); if (loomExists) await logKpi(user, "Looms", 1); await updateContact(id, { loom_pending: false, next_follow_up: null, next_nurture_date: addDays(todayStr(), delay), last_contacted_at: todayStr() }); logActivity(user, "sent_loom", c.name); flash(`Loom sent!${loomExists ? " (+1 Looms)" : ""} Nurture in ${delay}d.`); };
   const resetProgress = async (id, step = 0) => { const c = contacts.find(x => x.id === id); if (!c) return; await updateContact(id, { current_step: step, nurture_step: 0, stage: step === 0 ? "new" : "outreach", next_follow_up: todayStr(), next_nurture_date: null, history: step === 0 ? [] : c.history }); flash(`${c.name} reset to step ${step}`); };
   const closeDeal = async (id, v) => { const c = contacts.find(x => x.id === id); await updateContact(id, { stage: "closed", closed_value: v, closed_at: todayStr(), next_follow_up: null, next_nurture_date: null }); logActivity(user, "closed_deal", `${c?.name} for ${fmtMoney(v)}`); flash(`Closed for ${fmtMoney(v)}!`); setCloseId(null); };
 
@@ -223,24 +227,38 @@ export default function CRM() {
   const updateMsg = async (id, d) => { await supabase.from("message_templates").update(d).eq("id", id); flash("Updated!"); };
   const deleteMsg = async (id, type) => { await supabase.from("message_templates").delete().eq("id", id); const list = (type === "outreach" ? messages : nurtureM).filter(m => m.id !== id); for (let i = 0; i < list.length; i++) { await supabase.from("message_templates").update({ step: i + 1 }).eq("id", list[i].id); } flash("Removed", "info"); };
 
-  // KPI functions
-  const getKpiEntry = (person, category, date) => kpiEntries.find(e => e.person === person && e.category === category && e.date === date);
-  const getKpiTarget = (person, category) => kpiTargets.find(t => t.person === person && t.category === category);
-  const getWeeklyCount = (person, category) => { const ws = weekStart(); return kpiEntries.filter(e => e.person === person && e.category === category && e.date >= ws).reduce((s, e) => s + (e.count || 0), 0); };
+  // KPI functions (editable categories)
+  // Active categories, split by how they're tracked
+  const activeCats = [...kpiCategories].filter(c => c.active).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+  const dailyCats = activeCats.filter(c => (c.cadence || "daily") === "daily");
+  const weeklyCats = activeCats.filter(c => c.cadence === "weekly");
+  const catColor = (name) => kpiCategories.find(c => c.name === name)?.color || KPI_COLORS[name] || "#3B82F6";
+  // The team-wide target for a category, by how it's tracked
+  const catTarget = (cat) => (cat.cadence === "weekly" ? (cat.weekly_target || 0) : (cat.daily_target || 0));
 
-  const getStreak = (person, category) => {
-    const target = getKpiTarget(person, category);
-    if (!target || !target.active || target.daily_target <= 0) return 0;
-    let streak = 0;
-    let d = todayStr();
-    const todayEntry = getKpiEntry(person, category, d);
-    if (todayEntry && todayEntry.count >= target.daily_target) streak++;
-    for (let i = 1; i < 60; i++) {
-      d = addDays(todayStr(), -i);
-      const entry = getKpiEntry(person, category, d);
-      if (entry && entry.count >= target.daily_target) streak++;
-      else break;
+  const getKpiEntry = (person, category, date) => kpiEntries.find(e => e.person === person && e.category === category && e.date === date);
+  const getDayCount = (person, category, date) => getKpiEntry(person, category, date)?.count || 0;
+  const getWeeklyCount = (person, category) => { const ws = weekStart(); return kpiEntries.filter(e => e.person === person && e.category === category && e.date >= ws).reduce((s, e) => s + (e.count || 0), 0); };
+  // Sum a category for the week containing a given week-start, from the long history
+  const weekCountOf = (person, category, ws) => allKpiEntries.filter(e => e.person === person && e.category === category && e.date >= ws && e.date <= addDays(ws, 6)).reduce((s, e) => s + (e.count || 0), 0);
+
+  // Streak takes a category OBJECT. Daily cats count consecutive days hitting the daily target. Weekly cats count consecutive weeks hitting the weekly target.
+  const getStreak = (person, cat) => {
+    if (!cat) return 0;
+    if (cat.cadence === "weekly") {
+      const tgt = cat.weekly_target || 0;
+      if (tgt <= 0) return 0;
+      let streak = 0;
+      const ws = weekStart();
+      if (weekCountOf(person, cat.name, ws) >= tgt) streak++;
+      for (let i = 1; i < 52; i++) { if (weekCountOf(person, cat.name, addDays(ws, -7 * i)) >= tgt) streak++; else break; }
+      return streak;
     }
+    const tgt = cat.daily_target || 0;
+    if (tgt <= 0) return 0;
+    let streak = 0;
+    if (getDayCount(person, cat.name, todayStr()) >= tgt) streak++;
+    for (let i = 1; i < 60; i++) { if (getDayCount(person, cat.name, addDays(todayStr(), -i)) >= tgt) streak++; else break; }
     return streak;
   };
 
@@ -255,10 +273,28 @@ export default function CRM() {
     }
     const { data: fresh } = await supabase.from("kpi_entries").select("*").gte("date", addDays(todayStr(), -30));
     if (fresh) setKpiEntries(fresh);
+    const { data: freshAll } = await supabase.from("kpi_entries").select("*").gte("date", addDays(todayStr(), -400));
+    if (freshAll) setAllKpiEntries(freshAll);
     if (delta > 0) logActivity(person, "logged_kpi", `+${delta} ${category}`);
   };
 
   const updateKpiTarget = async (id, data) => { await supabase.from("kpi_targets").update({ ...data, updated_at: new Date().toISOString() }).eq("id", id); flash("Target updated!"); };
+
+  // Category CRUD (the editable non-negotiables)
+  const addCategory = async (d) => {
+    if (!d.name?.trim()) return;
+    if (kpiCategories.some(c => c.name.toLowerCase() === d.name.trim().toLowerCase())) { flash("That name already exists", "error"); return; }
+    const maxOrder = kpiCategories.reduce((m, c) => Math.max(m, c.sort_order || 0), 0);
+    const { error } = await supabase.from("kpi_categories").insert({ name: d.name.trim(), color: d.color || "#3B82F6", cadence: d.cadence || "daily", daily_target: d.daily_target ?? 1, weekly_target: d.weekly_target ?? 1, sort_order: maxOrder + 1, active: true });
+    if (error) flash("Error: " + error.message, "error"); else flash(`Added "${d.name.trim()}"`);
+  };
+  const updateCategory = async (id, d) => { await supabase.from("kpi_categories").update(d).eq("id", id); };
+  const deleteCategory = async (id) => { const c = kpiCategories.find(x => x.id === id); await supabase.from("kpi_categories").delete().eq("id", id); flash(`Removed "${c?.name}"`, "info"); };
+  // Renaming also moves the logged history over so streaks/totals stay intact
+  const renameCategory = async (id, oldName, newName) => {
+    if (oldName !== newName) await supabase.from("kpi_entries").update({ category: newName }).eq("category", oldName);
+    await supabase.from("kpi_categories").update({ name: newName }).eq("id", id);
+  };
 
   const getSequences = (type) => { const list = type === "outreach" ? messages : nurtureM; return [...new Set(list.map(m => m.sequence_name || "Default"))]; };
   const getNext = (c) => { const seq = c.outreach_sequence || "Default"; let seqMsgs = messages.filter(m => (m.sequence_name || "Default") === seq).sort((a, b) => a.step - b.step); if (seqMsgs.length === 0) seqMsgs = messages.filter(m => (m.sequence_name || "Default") === "Default").sort((a, b) => a.step - b.step); if (seqMsgs.length === 0) seqMsgs = messages.sort((a, b) => a.step - b.step); const idx = c.current_step || 0; const m = seqMsgs[idx]; if (!m) return null; const firstName = c.name.split(" ")[0]; const variants = [{ label: "A", body: m.body.replace(/\{\{name\}\}/g, firstName) }, ...((m.variants || []).map(v => ({ label: v.label, body: v.body.replace(/\{\{name\}\}/g, firstName) })))]; return { ...m, variants, body: variants[0].body }; };
@@ -360,26 +396,26 @@ export default function CRM() {
   // Calculate winners for a specific week (using all KPI entries data)
   const calcWeekWinners = (weekStartDate) => {
     const weekDays = Array.from({ length: 7 }, (_, i) => addDays(weekStartDate, i));
+    const dailyTargets = dailyCats.filter(c => (c.daily_target || 0) > 0);
     const results = TEAM.map(person => {
-      const activeTargets = kpiTargets.filter(t => t.person === person && t.active && t.daily_target > 0);
       let daysHit = 0;
       let totalActivity = 0;
-      if (activeTargets.length > 0) {
+      if (dailyTargets.length > 0) {
         weekDays.forEach(d => {
-          const allHit = activeTargets.every(t => {
-            const entry = allKpiEntries.find(e => e.person === person && e.category === t.category && e.date === d);
-            return entry && entry.count >= t.daily_target;
+          const allHit = dailyTargets.every(c => {
+            const entry = allKpiEntries.find(e => e.person === person && e.category === c.name && e.date === d);
+            return entry && entry.count >= c.daily_target;
           });
           if (allHit) daysHit++;
         });
-        // Total activity for tiebreaker
-        weekDays.forEach(d => {
-          activeTargets.forEach(t => {
-            const entry = allKpiEntries.find(e => e.person === person && e.category === t.category && e.date === d);
-            totalActivity += entry?.count || 0;
-          });
-        });
       }
+      // Total activity across ALL active categories for the tiebreaker
+      activeCats.forEach(c => {
+        weekDays.forEach(d => {
+          const entry = allKpiEntries.find(e => e.person === person && e.category === c.name && e.date === d);
+          totalActivity += entry?.count || 0;
+        });
+      });
       return { person, daysHit, totalActivity };
     });
     // Sort: most days hit, then most activity (tiebreaker)
@@ -437,10 +473,10 @@ export default function CRM() {
 
   // Run auto-award once data is loaded
   useEffect(() => {
-    if (!loading && allKpiEntries.length > 0 && kpiTargets.length > 0) {
+    if (!loading && allKpiEntries.length > 0 && kpiCategories.length > 0) {
       autoAwardPastWeeks();
     }
-  }, [loading, allKpiEntries.length, kpiTargets.length, victories.length]);
+  }, [loading, allKpiEntries.length, kpiCategories.length, victories.length]);
 
   // === LEAD RECYCLING SYSTEM ===
   // Find the teammate with the fewest active leads (excluding excluded persons)
@@ -571,50 +607,49 @@ export default function CRM() {
   const getYesterdayRecap = () => {
     const y = yesterdayStr();
     return TEAM.map(person => {
-      const dms = allKpiEntries.find(e => e.person === person && e.category === "DMs" && e.date === y)?.count || 0;
-      const looms = allKpiEntries.find(e => e.person === person && e.category === "Looms" && e.date === y)?.count || 0;
-      const dmTarget = getKpiTarget(person, "DMs");
-      const loomTarget = getKpiTarget(person, "Looms");
-      const dmHit = dmTarget?.active && dmTarget.daily_target > 0 ? dms >= dmTarget.daily_target : null;
-      const loomHit = loomTarget?.active && loomTarget.daily_target > 0 ? looms >= loomTarget.daily_target : null;
+      // One row per active DAILY non-negotiable
+      const cats = dailyCats.map(c => {
+        const count = allKpiEntries.find(e => e.person === person && e.category === c.name && e.date === y)?.count || 0;
+        const target = c.daily_target || 0;
+        const hit = target > 0 ? count >= target : null;
+        return { name: c.name, color: catColor(c.name), count, target, hit };
+      });
 
       // Activity from log
       const yLog = allActivityLog.filter(a => a.person === person && a.created_at.split("T")[0] === y);
-      const responses = contacts.filter(c => c.assigned_to === person && (c.history || []).some(h => h.at === y) && c.stage === "responded").length;
       const closes = yLog.filter(a => a.action === "closed_deal");
       const closedCount = closes.length;
       const closedValue = closes.reduce((sum, a) => { const m = a.detail?.match(/\$([0-9,]+)/); return sum + (m ? parseInt(m[1].replace(/,/g, "")) : 0); }, 0);
       const booked = yLog.filter(a => a.action === "moved_stage" && a.detail?.includes("Call Booked")).length;
       const movedToResponded = yLog.filter(a => a.action === "moved_stage" && a.detail?.includes("Responded")).length;
 
-      const totalActivity = dms + looms + closedCount + booked + movedToResponded;
+      const catTotal = cats.reduce((s, c) => s + c.count, 0);
+      const totalActivity = catTotal + closedCount + booked + movedToResponded;
 
-      return { person, dms, looms, dmTarget, loomTarget, dmHit, loomHit, responses: movedToResponded, closedCount, closedValue, booked, totalActivity };
+      return { person, cats, responses: movedToResponded, closedCount, closedValue, booked, totalActivity };
     });
   };
 
   // === CALENDAR DATA ===
   const getCalendarData = (year, person, metric) => {
-    // metric: "dms" | "looms" | "all" | "closed"
+    // metric: "all" | "closed" | a category name
     const data = {};
     const start = `${year}-01-01`;
     const end = `${year}-12-31`;
 
-    if (metric === "dms" || metric === "looms") {
-      const cat = metric === "dms" ? "DMs" : "Looms";
-      allKpiEntries
-        .filter(e => e.date >= start && e.date <= end && e.category === cat && (person === "all" || e.person === person))
-        .forEach(e => { data[e.date] = (data[e.date] || 0) + (e.count || 0); });
-    } else if (metric === "all") {
-      // Total team activity = DMs + Looms
+    if (metric === "all") {
       allKpiEntries
         .filter(e => e.date >= start && e.date <= end && (person === "all" || e.person === person))
         .forEach(e => { data[e.date] = (data[e.date] || 0) + (e.count || 0); });
     } else if (metric === "closed") {
-      // Count closes from contacts.closed_at
       contacts
         .filter(c => c.stage === "closed" && c.closed_at && c.closed_at >= start && c.closed_at <= end && (person === "all" || c.assigned_to === person))
         .forEach(c => { data[c.closed_at] = (data[c.closed_at] || 0) + 1; });
+    } else {
+      // metric is a category name
+      allKpiEntries
+        .filter(e => e.date >= start && e.date <= end && e.category === metric && (person === "all" || e.person === person))
+        .forEach(e => { data[e.date] = (data[e.date] || 0) + (e.count || 0); });
     }
     return data;
   };
@@ -624,22 +659,23 @@ export default function CRM() {
     const ws = weekStart();
     const daysSoFar = Math.max(1, daysDiff(ws, todayStr()) + 1);
     const weekDaysSoFar = Array.from({ length: daysSoFar }, (_, i) => addDays(ws, i));
+    const dailyTargets = dailyCats.filter(c => (c.daily_target || 0) > 0);
     return TEAM.map(person => {
-      const weeklyDMs = getWeeklyCount(person, "DMs");
-      const weeklyLooms = getWeeklyCount(person, "Looms");
-      const todayDMs = getKpiEntry(person, "DMs", todayStr())?.count || 0;
-      const todayLooms = getKpiEntry(person, "Looms", todayStr())?.count || 0;
-      const dmTarget = getKpiTarget(person, "DMs");
-      const loomTarget = getKpiTarget(person, "Looms");
-      const dmStreak = getStreak(person, "DMs");
-      const loomStreak = getStreak(person, "Looms");
-      const totalWeekly = weeklyDMs + weeklyLooms;
+      // weekly count + streak for every active category
+      const cats = activeCats.map(c => ({
+        name: c.name,
+        color: catColor(c.name),
+        cadence: c.cadence || "daily",
+        weekly: getWeeklyCount(person, c.name),
+        streak: getStreak(person, c),
+      }));
+      const totalWeekly = cats.reduce((s, c) => s + c.weekly, 0);
+      const topStreak = cats.reduce((m, c) => Math.max(m, c.streak), 0);
       const myLeads = contacts.filter(c => c.assigned_to === person);
       const closedVal = myLeads.filter(c => c.stage === "closed").reduce((s, c) => s + (c.closed_value || 0), 0);
-      const activeTargets = kpiTargets.filter(t => t.person === person && t.active && t.daily_target > 0);
       let daysHit = 0;
-      if (activeTargets.length > 0) { weekDaysSoFar.forEach(d => { const allHit = activeTargets.every(t => { const entry = getKpiEntry(person, t.category, d); return entry && entry.count >= t.daily_target; }); if (allHit) daysHit++; }); }
-      return { person, weeklyDMs, weeklyLooms, todayDMs, todayLooms, dmTarget, loomTarget, dmStreak, loomStreak, totalWeekly, closedVal, leads: myLeads.length, daysHit, daysSoFar };
+      if (dailyTargets.length > 0) { weekDaysSoFar.forEach(d => { const allHit = dailyTargets.every(c => { const cnt = getDayCount(person, c.name, d); return cnt >= c.daily_target; }); if (allHit) daysHit++; }); }
+      return { person, cats, topStreak, totalWeekly, closedVal, leads: myLeads.length, daysHit, daysSoFar };
     }).sort((a, b) => b.daysHit - a.daysHit || b.totalWeekly - a.totalWeekly);
   };
 
@@ -671,11 +707,12 @@ export default function CRM() {
     const recap = getYesterdayRecap();
     const yDate = yesterdayStr();
     const dayName = fmtDayName(yDate);
-    const totalDMs = recap.reduce((s, r) => s + r.dms, 0);
-    const totalLooms = recap.reduce((s, r) => s + r.looms, 0);
+    const catTotalOf = (r) => r.cats.reduce((s, c) => s + c.count, 0);
+    const teamActivity = recap.reduce((s, r) => s + catTotalOf(r), 0);
     const totalClosed = recap.reduce((s, r) => s + r.closedValue, 0);
     const totalBooked = recap.reduce((s, r) => s + r.booked, 0);
-    const noActivity = totalDMs + totalLooms + totalClosed + totalBooked === 0;
+    const noActivity = teamActivity + totalClosed + totalBooked === 0;
+    const maxCatTotal = Math.max(0, ...recap.map(catTotalOf));
 
     return (
       <div style={{ marginBottom: 20, background: "linear-gradient(135deg, #0F172A 0%, #1E1B4B 100%)", borderRadius: 12, border: "1px solid #3B82F640", padding: 16 }}>
@@ -689,8 +726,7 @@ export default function CRM() {
           </div>
           {!noActivity && (
             <div style={{ display: "flex", gap: 12 }}>
-              <div style={{ textAlign: "right" }}><div style={{ fontSize: 9, color: "#64748B", fontWeight: 700, textTransform: "uppercase" }}>Team DMs</div><div style={{ fontSize: 18, fontWeight: 700, color: "#3B82F6", fontFamily: "'Outfit',sans-serif" }}>{totalDMs}</div></div>
-              <div style={{ textAlign: "right" }}><div style={{ fontSize: 9, color: "#64748B", fontWeight: 700, textTransform: "uppercase" }}>Looms</div><div style={{ fontSize: 18, fontWeight: 700, color: "#EC4899", fontFamily: "'Outfit',sans-serif" }}>{totalLooms}</div></div>
+              <div style={{ textAlign: "right" }}><div style={{ fontSize: 9, color: "#64748B", fontWeight: 700, textTransform: "uppercase" }}>Team Activity</div><div style={{ fontSize: 18, fontWeight: 700, color: "#3B82F6", fontFamily: "'Outfit',sans-serif" }}>{teamActivity}</div></div>
               {totalBooked > 0 && <div style={{ textAlign: "right" }}><div style={{ fontSize: 9, color: "#64748B", fontWeight: 700, textTransform: "uppercase" }}>Booked</div><div style={{ fontSize: 18, fontWeight: 700, color: "#F59E0B", fontFamily: "'Outfit',sans-serif" }}>{totalBooked}</div></div>}
               {totalClosed > 0 && <div style={{ textAlign: "right" }}><div style={{ fontSize: 9, color: "#64748B", fontWeight: 700, textTransform: "uppercase" }}>Closed</div><div style={{ fontSize: 18, fontWeight: 700, color: "#10B981", fontFamily: "'Outfit',sans-serif" }}>{fmtMoney(totalClosed)}</div></div>}
             </div>
@@ -706,10 +742,10 @@ export default function CRM() {
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
             {recap.map(r => {
-              const hasActivity = r.dms + r.looms + r.closedCount + r.booked + r.responses > 0;
-              const allTargetsHit = (r.dmHit !== false) && (r.loomHit !== false) && (r.dmHit === true || r.loomHit === true);
-              const missedTargets = r.dmHit === false || r.loomHit === false;
-              const isMVP = r.closedValue > 0 || (r.dms + r.looms === Math.max(...recap.map(x => x.dms + x.looms)) && r.dms + r.looms > 0);
+              const catTotal = catTotalOf(r);
+              const hasActivity = catTotal + r.closedCount + r.booked + r.responses > 0;
+              const missedTargets = r.cats.some(c => c.hit === false);
+              const isMVP = r.closedValue > 0 || (catTotal === maxCatTotal && catTotal > 0);
 
               return (
                 <div key={r.person} style={{
@@ -730,28 +766,17 @@ export default function CRM() {
                   </div>
 
                   <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    {r.dmTarget?.active && (
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11 }}>
-                        <span style={{ color: "#94A3B8" }}>📨 DMs</span>
+                    {r.cats.map(c => (
+                      <div key={c.name} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11 }}>
+                        <span style={{ display: "flex", alignItems: "center", gap: 5, color: "#94A3B8" }}><span style={{ width: 7, height: 7, borderRadius: "50%", background: c.color, flexShrink: 0 }} />{c.name}</span>
                         <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                          <span style={{ color: "#F1F5F9", fontWeight: 600 }}>{r.dms}</span>
-                          {r.dmTarget.daily_target > 0 && <span style={{ color: "#475569", fontSize: 10 }}>/{r.dmTarget.daily_target}</span>}
-                          {r.dmHit === true && <span style={{ color: "#10B981" }}>✓</span>}
-                          {r.dmHit === false && <span style={{ color: "#EF4444" }}>✕</span>}
+                          <span style={{ color: "#F1F5F9", fontWeight: 600 }}>{c.count}</span>
+                          {c.target > 0 && <span style={{ color: "#475569", fontSize: 10 }}>/{c.target}</span>}
+                          {c.hit === true && <span style={{ color: "#10B981" }}>✓</span>}
+                          {c.hit === false && <span style={{ color: "#EF4444" }}>✕</span>}
                         </span>
                       </div>
-                    )}
-                    {r.loomTarget?.active && (
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11 }}>
-                        <span style={{ color: "#94A3B8" }}>🎥 Looms</span>
-                        <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                          <span style={{ color: "#F1F5F9", fontWeight: 600 }}>{r.looms}</span>
-                          {r.loomTarget.daily_target > 0 && <span style={{ color: "#475569", fontSize: 10 }}>/{r.loomTarget.daily_target}</span>}
-                          {r.loomHit === true && <span style={{ color: "#10B981" }}>✓</span>}
-                          {r.loomHit === false && <span style={{ color: "#EF4444" }}>✕</span>}
-                        </span>
-                      </div>
-                    )}
+                    ))}
                     {r.responses > 0 && (
                       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
                         <span style={{ color: "#94A3B8" }}>💬 Replies</span>
@@ -811,10 +836,15 @@ export default function CRM() {
       weeks.push(week);
     }
 
+    const hexToRgb = (hex) => {
+      const h = (hex || "#3B82F6").replace("#", "");
+      const n = h.length === 3 ? h.split("").map(x => x + x).join("") : h;
+      return [parseInt(n.slice(0, 2), 16), parseInt(n.slice(2, 4), 16), parseInt(n.slice(4, 6), 16)];
+    };
     const getColor = (val, inYear) => {
       if (!inYear) return "transparent";
       if (val === 0) return "#1E293B";
-      const baseColor = metric === "looms" ? [236, 72, 153] : metric === "closed" ? [16, 185, 129] : [59, 130, 246];
+      const baseColor = metric === "all" ? [59, 130, 246] : metric === "closed" ? [16, 185, 129] : hexToRgb(catColor(metric));
       const intensity = maxVal > 0 ? val / maxVal : 0;
       const tier = intensity < 0.25 ? 0.25 : intensity < 0.5 ? 0.5 : intensity < 0.75 ? 0.75 : 1;
       return `rgba(${baseColor[0]}, ${baseColor[1]}, ${baseColor[2]}, ${tier})`;
@@ -847,7 +877,8 @@ export default function CRM() {
       return { name: m, total };
     });
 
-    const metricLabels = { all: "All Activity (DMs + Looms)", dms: "DMs Only", looms: "Looms Only", closed: "Deals Closed" };
+    const metricLabels = { all: "All Activity", closed: "Deals Closed" };
+    activeCats.forEach(c => { metricLabels[c.name] = c.name; });
     const years = [];
     const cy = new Date().getFullYear();
     for (let y = cy; y >= cy - 3; y--) years.push(y);
@@ -872,10 +903,9 @@ export default function CRM() {
           </div>
           <div>
             <div style={{ ...S.lb, marginBottom: 5 }}>Metric</div>
-            <div style={{ display: "flex", gap: 4 }}>
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
               <button style={{ ...S.pill, ...(metric === "all" ? S.pillOn : {}) }} onClick={() => setMetric("all")}>All Activity</button>
-              <button style={{ ...S.pill, ...(metric === "dms" ? S.pillOn : {}) }} onClick={() => setMetric("dms")}>📨 DMs</button>
-              <button style={{ ...S.pill, ...(metric === "looms" ? S.pillOn : {}) }} onClick={() => setMetric("looms")}>🎥 Looms</button>
+              {activeCats.map(c => <button key={c.id} style={{ ...S.pill, ...(metric === c.name ? S.pillOn : {}) }} onClick={() => setMetric(c.name)}>{c.name}</button>)}
               <button style={{ ...S.pill, ...(metric === "closed" ? S.pillOn : {}) }} onClick={() => setMetric("closed")}>🎉 Closed</button>
             </div>
           </div>
@@ -956,7 +986,7 @@ export default function CRM() {
             <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6, marginTop: 12 }}>
               <span style={{ color: "#64748B", fontSize: 10 }}>Less</span>
               {[0, 0.25, 0.5, 0.75, 1].map((tier, i) => {
-                const baseColor = metric === "looms" ? [236, 72, 153] : metric === "closed" ? [16, 185, 129] : [59, 130, 246];
+                const baseColor = metric === "all" ? [59, 130, 246] : metric === "closed" ? [16, 185, 129] : hexToRgb(catColor(metric));
                 return <div key={i} style={{ width: 12, height: 12, borderRadius: 2, background: tier === 0 ? "#1E293B" : `rgba(${baseColor[0]}, ${baseColor[1]}, ${baseColor[2]}, ${tier})` }} />;
               })}
               <span style={{ color: "#64748B", fontSize: 10 }}>More</span>
@@ -981,7 +1011,7 @@ export default function CRM() {
               <div key={m.name} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
                 <span style={{ color: "#94A3B8", fontSize: 11, fontWeight: 600, width: 30 }}>{m.name}</span>
                 <div style={{ flex: 1, height: 18, background: "#0B1120", borderRadius: 4, overflow: "hidden", position: "relative" }}>
-                  <div style={{ width: `${(m.total / maxMonth) * 100}%`, height: "100%", background: metric === "looms" ? "linear-gradient(90deg, #EC489960, #EC4899)" : metric === "closed" ? "linear-gradient(90deg, #10B98160, #10B981)" : "linear-gradient(90deg, #3B82F660, #3B82F6)", borderRadius: 4, transition: "width 0.3s" }} />
+                  <div style={{ width: `${(m.total / maxMonth) * 100}%`, height: "100%", background: metric === "all" ? "linear-gradient(90deg, #3B82F660, #3B82F6)" : metric === "closed" ? "linear-gradient(90deg, #10B98160, #10B981)" : `linear-gradient(90deg, ${catColor(metric)}60, ${catColor(metric)})`, borderRadius: 4, transition: "width 0.3s" }} />
                 </div>
                 <span style={{ color: "#F1F5F9", fontSize: 12, fontWeight: 700, fontFamily: "'Outfit',sans-serif", width: 50, textAlign: "right" }}>{m.total.toLocaleString()}</span>
               </div>
@@ -1038,7 +1068,7 @@ export default function CRM() {
     const medals = ["🥇", "🥈", "🥉"];
     const kingPerson = lb[0]?.daysHit > 0 ? lb[0].person : null;
     return (<div style={S.content}>
-      <div style={S.header}><div><h1 style={S.h1}>KPIs</h1><p style={S.sub}>Team performance and accountability</p></div><button style={S.ghost} onClick={() => setModal({ type: "kpi" })}>⚙ Edit Targets</button></div>
+      <div style={S.header}><div><h1 style={S.h1}>KPIs</h1><p style={S.sub}>Team performance and accountability</p></div><button style={S.ghost} onClick={() => setModal({ type: "kpi" })}>⚙ Edit KPIs</button></div>
 
       {/* Hall of Champions */}
       {victories.length > 0 && (
@@ -1117,10 +1147,9 @@ export default function CRM() {
                   {isKing && <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: "#F59E0B20", color: "#F59E0B" }}>👑 KING</span>}
                   {isGay && <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: "#EC489920", color: "#EC4899" }}>🏳️‍🌈 officially gay</span>}
                 </div>
-                <div style={{ display: "flex", gap: 12, marginTop: 2 }}>
-                  {p.dmTarget?.active && <span style={{ fontSize: 11, color: "#3B82F6" }}>{p.weeklyDMs} DMs</span>}
-                  {p.loomTarget?.active && <span style={{ fontSize: 11, color: "#EC4899" }}>{p.weeklyLooms} Looms</span>}
-                  {p.dmStreak > 0 && <span style={{ fontSize: 11, color: "#F59E0B" }}>🔥 {p.dmStreak}d streak</span>}
+                <div style={{ display: "flex", gap: 10, marginTop: 2, flexWrap: "wrap" }}>
+                  {p.cats.map(c => <span key={c.name} style={{ fontSize: 11, color: c.color }}>{c.weekly} {c.name}</span>)}
+                  {p.topStreak > 0 && <span style={{ fontSize: 11, color: "#F59E0B" }}>🔥 {p.topStreak} streak</span>}
                   <span style={{ fontSize: 11, color: p.daysHit > 0 ? "#10B981" : "#475569" }}>KPIs hit: {p.daysHit || 0}/{p.daysSoFar}d</span>
                 </div>
               </div>
@@ -1135,32 +1164,62 @@ export default function CRM() {
 
       {/* Your daily tracker */}
       <div style={{ marginBottom: 24 }}>
-        <h2 style={S.h2}>Log Today&apos;s Activity</h2>
+        <h2 style={S.h2}>Log Today&apos;s Non-Negotiables</h2>
+        {dailyCats.length === 0 ? <div style={S.empty}><p style={{ color: "#64748B" }}>No daily non-negotiables yet. Hit &quot;Edit KPIs&quot; up top to add some.</p></div> : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 10 }}>
-          {["DMs", "Looms"].map(cat => {
-            const target = getKpiTarget(user, cat);
-            if (!target || !target.active) return null;
-            const todayCount = getKpiEntry(user, cat, todayStr())?.count || 0;
-            const weeklyCount = getWeeklyCount(user, cat);
+          {dailyCats.map(cat => {
+            const dt = cat.daily_target || 0;
+            const wt = dt * 7;
+            const todayCount = getDayCount(user, cat.name, todayStr());
+            const weeklyCount = getWeeklyCount(user, cat.name);
             const streak = getStreak(user, cat);
-            const color = KPI_COLORS[cat];
+            const color = catColor(cat.name);
             return (
-              <div key={cat} style={{ padding: 14, background: "#0F172A", borderRadius: 10, border: `1px solid ${todayCount >= target.daily_target ? "#10B98140" : "#1E293B"}`, borderLeft: `3px solid ${color}` }}>
+              <div key={cat.id} style={{ padding: 14, background: "#0F172A", borderRadius: 10, border: `1px solid ${dt > 0 && todayCount >= dt ? "#10B98140" : "#1E293B"}`, borderLeft: `3px solid ${color}` }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                  <div><div style={{ fontSize: 13, fontWeight: 600, color }}>{cat}</div>{streak > 0 && <div style={{ fontSize: 10, color: "#F59E0B" }}>🔥 {streak} day streak</div>}</div>
+                  <div><div style={{ fontSize: 13, fontWeight: 600, color }}>{cat.name}</div>{streak > 0 && <div style={{ fontSize: 10, color: "#F59E0B" }}>🔥 {streak} day streak</div>}</div>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <button onClick={() => logKpi(user, cat, -1)} style={{ ...S.kpiBtn, opacity: todayCount > 0 ? 1 : 0.3 }}>-</button>
+                    <button onClick={() => logKpi(user, cat.name, -1)} style={{ ...S.kpiBtn, opacity: todayCount > 0 ? 1 : 0.3 }}>-</button>
                     <span style={{ fontSize: 22, fontWeight: 700, color: "#F1F5F9", fontFamily: "'Outfit',sans-serif", minWidth: 34, textAlign: "center" }}>{todayCount}</span>
-                    <button onClick={() => logKpi(user, cat, 1)} style={{ ...S.kpiBtn, background: color + "20", borderColor: color + "40", color }}>+</button>
+                    <button onClick={() => logKpi(user, cat.name, 1)} style={{ ...S.kpiBtn, background: color + "20", borderColor: color + "40", color }}>+</button>
                   </div>
                 </div>
-                <div style={{ marginBottom: 6 }}><div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, marginBottom: 2 }}><span style={{ color: "#64748B" }}>Today</span><span style={{ color: todayCount >= target.daily_target ? "#10B981" : "#94A3B8", fontWeight: 600 }}>{todayCount}/{target.daily_target}</span></div><ProgressBar value={todayCount} max={target.daily_target} color={color} /></div>
-                <div><div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, marginBottom: 2 }}><span style={{ color: "#64748B" }}>Week</span><span style={{ color: weeklyCount >= target.weekly_target ? "#10B981" : "#94A3B8", fontWeight: 600 }}>{weeklyCount}/{target.weekly_target}</span></div><ProgressBar value={weeklyCount} max={target.weekly_target} color={color} h={6} /></div>
+                <div style={{ marginBottom: 6 }}><div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, marginBottom: 2 }}><span style={{ color: "#64748B" }}>Today</span><span style={{ color: dt > 0 && todayCount >= dt ? "#10B981" : "#94A3B8", fontWeight: 600 }}>{todayCount}{dt > 0 ? `/${dt}` : ""}</span></div><ProgressBar value={todayCount} max={dt} color={color} /></div>
+                <div><div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, marginBottom: 2 }}><span style={{ color: "#64748B" }}>Week</span><span style={{ color: wt > 0 && weeklyCount >= wt ? "#10B981" : "#94A3B8", fontWeight: 600 }}>{weeklyCount}{wt > 0 ? `/${wt}` : ""}</span></div><ProgressBar value={weeklyCount} max={wt} color={color} h={6} /></div>
               </div>
             );
           })}
         </div>
+        )}
       </div>
+
+      {/* Weekly non-negotiables */}
+      {weeklyCats.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <h2 style={S.h2}>This Week&apos;s Non-Negotiables</h2>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 10 }}>
+            {weeklyCats.map(cat => {
+              const wt = cat.weekly_target || 0;
+              const weeklyCount = getWeeklyCount(user, cat.name);
+              const streak = getStreak(user, cat);
+              const color = catColor(cat.name);
+              return (
+                <div key={cat.id} style={{ padding: 14, background: "#0F172A", borderRadius: 10, border: `1px solid ${wt > 0 && weeklyCount >= wt ? "#10B98140" : "#1E293B"}`, borderLeft: `3px solid ${color}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                    <div><div style={{ fontSize: 13, fontWeight: 600, color }}>{cat.name}</div><div style={{ fontSize: 10, color: "#64748B" }}>per week{streak > 0 && <span style={{ color: "#F59E0B" }}> · 🔥 {streak} wk streak</span>}</div></div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <button onClick={() => logKpi(user, cat.name, -1)} style={{ ...S.kpiBtn, opacity: weeklyCount > 0 ? 1 : 0.3 }}>-</button>
+                      <span style={{ fontSize: 22, fontWeight: 700, color: "#F1F5F9", fontFamily: "'Outfit',sans-serif", minWidth: 34, textAlign: "center" }}>{weeklyCount}</span>
+                      <button onClick={() => logKpi(user, cat.name, 1)} style={{ ...S.kpiBtn, background: color + "20", borderColor: color + "40", color }}>+</button>
+                    </div>
+                  </div>
+                  <div><div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, marginBottom: 2 }}><span style={{ color: "#64748B" }}>This week</span><span style={{ color: wt > 0 && weeklyCount >= wt ? "#10B981" : "#94A3B8", fontWeight: 600 }}>{weeklyCount}{wt > 0 ? `/${wt}` : ""}</span></div><ProgressBar value={weeklyCount} max={wt} color={color} /></div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Weekly heatmap */}
       <div style={{ marginBottom: 24 }}>
@@ -1168,7 +1227,7 @@ export default function CRM() {
         <div style={{ background: "#0F172A", borderRadius: 10, border: "1px solid #1E293B", padding: 14, overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead><tr><th style={{ ...S.th, padding: "6px 8px" }}></th>{weekDates.map((d, i) => <th key={d} style={{ ...S.th, padding: "6px 8px", color: d === todayStr() ? "#3B82F6" : "#64748B" }}>{dayNames[i]}<br /><span style={{ fontSize: 8, fontWeight: 400 }}>{d.slice(8)}.{d.slice(5, 7)}</span></th>)}<th style={{ ...S.th, padding: "6px 8px", color: "#10B981" }}>Total</th></tr></thead>
-            <tbody>{TEAM.map(person => { const cats = ["DMs", "Looms"].filter(cat => { const t = getKpiTarget(person, cat); return t && t.active; }); return cats.map((cat, ci) => (<tr key={person + cat} style={{ borderBottom: "1px solid #1E293B" }}><td style={{ padding: "6px 8px", fontSize: 11, color: "#CBD5E1", whiteSpace: "nowrap" }}>{ci === 0 && <><span style={{ color: "#F1F5F9", fontWeight: 600 }}>{person}</span><br /></>}<span style={{ color: KPI_COLORS[cat], fontSize: 10 }}>{cat}</span></td>{weekDates.map(d => { const e = getKpiEntry(person, cat, d); const cnt = e?.count || 0; const t = getKpiTarget(person, cat); const hit = t && cnt >= t.daily_target && t.daily_target > 0; return <td key={d} style={{ padding: "6px 8px", textAlign: "center", fontSize: 13, fontWeight: 600, color: cnt === 0 ? "#334155" : hit ? "#10B981" : "#F1F5F9", fontFamily: "'Outfit',sans-serif" }}>{cnt || "·"}</td>; })}<td style={{ padding: "6px 8px", textAlign: "center", fontSize: 13, fontWeight: 700, color: "#F1F5F9", fontFamily: "'Outfit',sans-serif" }}>{getWeeklyCount(person, cat)}</td></tr>)); })}</tbody>
+            <tbody>{TEAM.map(person => { return activeCats.map((cat, ci) => { const tgt = cat.cadence === "weekly" ? 0 : (cat.daily_target || 0); return (<tr key={person + cat.name} style={{ borderBottom: "1px solid #1E293B" }}><td style={{ padding: "6px 8px", fontSize: 11, color: "#CBD5E1", whiteSpace: "nowrap" }}>{ci === 0 && <><span style={{ color: "#F1F5F9", fontWeight: 600 }}>{person}</span><br /></>}<span style={{ color: catColor(cat.name), fontSize: 10 }}>{cat.name}{cat.cadence === "weekly" ? " (wk)" : ""}</span></td>{weekDates.map(d => { const cnt = getDayCount(person, cat.name, d); const hit = tgt > 0 && cnt >= tgt; return <td key={d} style={{ padding: "6px 8px", textAlign: "center", fontSize: 13, fontWeight: 600, color: cnt === 0 ? "#334155" : hit ? "#10B981" : "#F1F5F9", fontFamily: "'Outfit',sans-serif" }}>{cnt || "·"}</td>; })}<td style={{ padding: "6px 8px", textAlign: "center", fontSize: 13, fontWeight: 700, color: cat.cadence === "weekly" && (cat.weekly_target || 0) > 0 && getWeeklyCount(person, cat.name) >= cat.weekly_target ? "#10B981" : "#F1F5F9", fontFamily: "'Outfit',sans-serif" }}>{getWeeklyCount(person, cat.name)}</td></tr>); }); })}</tbody>
           </table>
         </div>
       </div>
@@ -1286,7 +1345,7 @@ export default function CRM() {
       {modal?.type === "csv" && <CSVModal onClose={() => setModal(null)} onImport={importCSV} />}
       {modal?.type === "dupes" && <DupesModal groups={findDuplicateGroups()} onClose={() => setModal(null)} onDelete={async (ids) => { await supabase.from("contacts").delete().in("id", ids); flash(`Deleted ${ids.length} duplicate(s)`, "info"); }} fmtEU={fmtEU} />}
       {modal?.type === "deleteAll" && <DeleteAllModal count={filtered.length} nuke={filter === "all" && !search} onClose={() => setModal(null)} onConfirm={deleteAllFiltered} />}
-      {modal?.type === "kpi" && <KpiSettingsModal targets={kpiTargets} onClose={() => setModal(null)} onSave={updateKpiTarget} />}
+      {modal?.type === "kpi" && <KpiManagerModal categories={[...kpiCategories].sort((a,b)=>(a.sort_order||0)-(b.sort_order||0))} onClose={() => setModal(null)} onAdd={addCategory} onUpdate={updateCategory} onRename={renameCategory} onDelete={deleteCategory} />}
       {closeId && <CloseModal c={contacts.find(x => x.id === closeId)} onClose={() => setCloseId(null)} onSave={v => closeDeal(closeId, v)} />}
       {delId && <div style={S.ov} onClick={() => setDelId(null)}><div style={S.cBox} onClick={e => e.stopPropagation()}><h3 style={{ color: "#F1F5F9", fontSize: 15, fontWeight: 600, margin: 0 }}>Delete this lead?</h3><p style={{ color: "#94A3B8", fontSize: 13, margin: "6px 0 14px" }}>Can&apos;t be undone.</p><div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}><button style={S.ghost} onClick={() => setDelId(null)}>Cancel</button><button style={S.danger} onClick={() => deleteContact(delId)}>Delete</button></div></div></div>}
     </div>
@@ -1422,7 +1481,83 @@ function CSVModal({ onClose, onImport }) { const [text, setText] = useState("");
 
 function CloseModal({ c, onClose, onSave }) { const [v, setV] = useState(c?.pipeline_value || ""); return (<div style={S.ov} onClick={onClose}><div style={{ ...S.cBox, width: 360 }} onClick={e => e.stopPropagation()}><h3 style={{ color: "#F1F5F9", fontSize: 15, fontWeight: 600, margin: 0 }}>Close {c?.name}</h3><p style={{ color: "#94A3B8", fontSize: 12, margin: "6px 0 12px" }}>How much did you close for?</p><div style={S.fi}><label style={S.lb}>Deal Value ($)</label><input style={S.ip} type="number" value={v} onChange={e => setV(e.target.value)} placeholder="5000" autoFocus onKeyDown={e => e.key === "Enter" && onSave(parseFloat(v) || 0)} /></div><div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 12 }}><button style={S.ghost} onClick={onClose}>Cancel</button><button style={{ ...S.pri, background: "linear-gradient(135deg,#10B981,#059669)" }} onClick={() => onSave(parseFloat(v) || 0)}>Close Deal</button></div></div></div>); }
 
-function KpiSettingsModal({ targets, onClose, onSave }) { const [edits, setEdits] = useState(targets.map(t => ({ ...t }))); const upd = (id, f, v) => setEdits(p => p.map(t => t.id === id ? { ...t, [f]: v } : t)); return (<div style={S.ov} onClick={onClose}><div style={{ ...S.modal, maxWidth: 600 }} onClick={e => e.stopPropagation()}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}><h2 style={{ color: "#F1F5F9", fontSize: 17, fontWeight: 700, fontFamily: "'Outfit',sans-serif", margin: 0 }}>KPI Settings</h2><button style={S.x} onClick={onClose}>✕</button></div><p style={{ color: "#94A3B8", fontSize: 12, marginBottom: 16 }}>Set targets and toggle categories for each person.</p>{TEAM.map(person => (<div key={person} style={{ marginBottom: 16 }}><div style={{ color: "#F1F5F9", fontWeight: 600, fontSize: 14, marginBottom: 8 }}>{person}</div>{["DMs", "Looms"].map(cat => { const t = edits.find(x => x.person === person && x.category === cat); if (!t) return null; return (<div key={cat} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, padding: "8px 10px", background: "#0B1120", borderRadius: 8, border: `1px solid ${t.active ? KPI_COLORS[cat] + "30" : "#1E293B"}` }}><button onClick={() => upd(t.id, "active", !t.active)} style={{ width: 32, height: 20, borderRadius: 10, border: "none", background: t.active ? KPI_COLORS[cat] : "#334155", cursor: "pointer", position: "relative", padding: 0 }}><div style={{ width: 16, height: 16, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: t.active ? 14 : 2, transition: "left 0.2s" }} /></button><span style={{ color: KPI_COLORS[cat], fontSize: 12, fontWeight: 600, width: 50 }}>{cat}</span><div style={{ display: "flex", alignItems: "center", gap: 4 }}><label style={{ color: "#64748B", fontSize: 10 }}>Daily:</label><input type="number" min="0" value={t.daily_target} onChange={e => upd(t.id, "daily_target", parseInt(e.target.value) || 0)} style={{ ...S.ip, width: 60, padding: "4px 6px", textAlign: "center" }} disabled={!t.active} /></div><div style={{ display: "flex", alignItems: "center", gap: 4 }}><label style={{ color: "#64748B", fontSize: 10 }}>Weekly:</label><input type="number" min="0" value={t.weekly_target} onChange={e => upd(t.id, "weekly_target", parseInt(e.target.value) || 0)} style={{ ...S.ip, width: 60, padding: "4px 6px", textAlign: "center" }} disabled={!t.active} /></div></div>); })}</div>))}<div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 16 }}><button style={S.ghost} onClick={onClose}>Cancel</button><button style={S.pri} onClick={async () => { for (const t of edits) { await onSave(t.id, { daily_target: t.daily_target, weekly_target: t.weekly_target, active: t.active }); } onClose(); }}>Save All</button></div></div></div>); }
+function KpiManagerModal({ categories, onClose, onAdd, onUpdate, onRename, onDelete }) {
+  const PRESET = ["#3B82F6", "#EC4899", "#F59E0B", "#10B981", "#8B5CF6", "#EF4444", "#06B6D4", "#F97316"];
+  const [rows, setRows] = useState(categories.map(c => ({ ...c })));
+  const [nc, setNc] = useState({ name: "", cadence: "daily", target: 1, color: "#3B82F6" });
+  // Keep the editor in sync when categories change (add/delete/another teammate edits)
+  useEffect(() => { setRows(categories.map(c => ({ ...c }))); }, [categories]);
+  const setRow = (id, patch) => setRows(p => p.map(r => r.id === id ? { ...r, ...patch } : r));
+
+  const saveName = (r) => { const orig = categories.find(c => c.id === r.id); if (orig && r.name.trim() && r.name.trim() !== orig.name) onRename(r.id, orig.name, r.name.trim()); };
+  const saveTarget = (r) => { const v = parseInt(r._target) || 0; if (r.cadence === "weekly") onUpdate(r.id, { weekly_target: v }); else onUpdate(r.id, { daily_target: v, weekly_target: v * 7 }); };
+  const toggleActive = (r) => { setRow(r.id, { active: !r.active }); onUpdate(r.id, { active: !r.active }); };
+  const setColor = (r, color) => { setRow(r.id, { color }); onUpdate(r.id, { color }); };
+  const setCadence = (r, cadence) => { setRow(r.id, { cadence }); onUpdate(r.id, { cadence }); };
+  const remove = (r) => { if (confirm(`Delete "${r.name}"? Past logs stay, but it disappears from tracking.`)) onDelete(r.id); };
+
+  const add = async () => { if (!nc.name.trim()) return; const t = parseInt(nc.target) || 0; const payload = nc.cadence === "weekly" ? { name: nc.name, color: nc.color, cadence: "weekly", weekly_target: t, daily_target: 0 } : { name: nc.name, color: nc.color, cadence: "daily", daily_target: t, weekly_target: t * 7 }; await onAdd(payload); setNc({ name: "", cadence: "daily", target: 1, color: "#3B82F6" }); };
+
+  return (
+    <div style={S.ov} onClick={onClose}>
+      <div style={{ ...S.modal, maxWidth: 640 }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+          <h2 style={{ color: "#F1F5F9", fontSize: 17, fontWeight: 700, fontFamily: "'Outfit',sans-serif", margin: 0 }}>Edit Non-Negotiables</h2>
+          <button style={S.x} onClick={onClose}>✕</button>
+        </div>
+        <p style={{ color: "#94A3B8", fontSize: 12, marginBottom: 14 }}>Add anything you want the team to track. Set the target everyone is held to. Changes save on their own.</p>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+          {rows.map(r => (
+            <div key={r.id} style={{ padding: "10px 12px", background: "#0B1120", borderRadius: 10, border: `1px solid ${r.active ? r.color + "30" : "#1E293B"}`, opacity: r.active ? 1 : 0.6 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <button onClick={() => toggleActive(r)} title={r.active ? "On" : "Off"} style={{ width: 32, height: 20, borderRadius: 10, border: "none", background: r.active ? r.color : "#334155", cursor: "pointer", position: "relative", padding: 0, flexShrink: 0 }}><div style={{ width: 16, height: 16, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: r.active ? 14 : 2, transition: "left 0.2s" }} /></button>
+                <input value={r.name} onChange={e => setRow(r.id, { name: e.target.value })} onBlur={() => saveName(r)} style={{ ...S.ip, flex: 1, minWidth: 110, padding: "6px 8px", fontWeight: 600 }} />
+                <select value={r.cadence || "daily"} onChange={e => setCadence(r, e.target.value)} style={{ ...S.ip, width: 90, padding: "6px 8px" }}>
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                </select>
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <label style={{ color: "#64748B", fontSize: 10 }}>{r.cadence === "weekly" ? "/wk" : "/day"}</label>
+                  <input type="number" min="0" defaultValue={r.cadence === "weekly" ? (r.weekly_target || 0) : (r.daily_target || 0)} onChange={e => r._target = e.target.value} onBlur={() => saveTarget(r)} style={{ ...S.ip, width: 56, padding: "6px 6px", textAlign: "center" }} />
+                </div>
+                <button onClick={() => remove(r)} style={{ ...S.act, color: "#EF4444" }}>✕</button>
+              </div>
+              <div style={{ display: "flex", gap: 5, marginTop: 8 }}>
+                {PRESET.map(col => <button key={col} onClick={() => setColor(r, col)} style={{ width: 18, height: 18, borderRadius: "50%", background: col, border: r.color === col ? "2px solid #fff" : "2px solid transparent", cursor: "pointer", padding: 0 }} />)}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ padding: 12, background: "#0F172A", borderRadius: 10, border: "1px dashed #334155" }}>
+          <div style={{ color: "#94A3B8", fontSize: 11, fontWeight: 700, textTransform: "uppercase", marginBottom: 8 }}>Add a new one</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <input value={nc.name} onChange={e => setNc({ ...nc, name: e.target.value })} placeholder="e.g. Instagram, X, Email, YouTube" style={{ ...S.ip, flex: 1, minWidth: 140, padding: "6px 8px" }} onKeyDown={e => e.key === "Enter" && add()} />
+            <select value={nc.cadence} onChange={e => setNc({ ...nc, cadence: e.target.value })} style={{ ...S.ip, width: 90, padding: "6px 8px" }}>
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+            </select>
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <label style={{ color: "#64748B", fontSize: 10 }}>{nc.cadence === "weekly" ? "/wk" : "/day"}</label>
+              <input type="number" min="0" value={nc.target} onChange={e => setNc({ ...nc, target: e.target.value })} style={{ ...S.ip, width: 56, padding: "6px 6px", textAlign: "center" }} />
+            </div>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
+            <div style={{ display: "flex", gap: 5 }}>
+              {PRESET.map(col => <button key={col} onClick={() => setNc({ ...nc, color: col })} style={{ width: 18, height: 18, borderRadius: "50%", background: col, border: nc.color === col ? "2px solid #fff" : "2px solid transparent", cursor: "pointer", padding: 0 }} />)}
+            </div>
+            <button style={{ ...S.pri, opacity: nc.name.trim() ? 1 : 0.5 }} onClick={add} disabled={!nc.name.trim()}>+ Add</button>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 16 }}>
+          <button style={S.pri} onClick={onClose}>Done</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 const S = {
   app: { display: "flex", minHeight: "100vh", background: "#0B1120", fontFamily: "'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif", color: "#CBD5E1" },
