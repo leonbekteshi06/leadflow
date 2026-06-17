@@ -35,7 +35,10 @@ const getNurtureDate = (c) => { if(!c.next_nurture_date) return null; const d = 
 const needsAction = (c) => { if (c.stage === "responded" && c.loom_pending) return true; if (["new", "outreach", "old", "interested"].includes(c.stage)) { return c.next_follow_up ? daysDiff(todayStr(), c.next_follow_up) <= 0 : false; } if (c.stage === "responded") { return c.next_nurture_date ? daysDiff(todayStr(), c.next_nurture_date) <= 0 : false; } return false; };
 const urgency = (c) => { if (c.stage === "responded" && c.loom_pending) return -1; if (["new", "outreach", "old", "interested"].includes(c.stage)) { return c.next_follow_up ? daysDiff(todayStr(), c.next_follow_up) : 999; } if (c.stage === "responded") { return c.next_nurture_date ? daysDiff(todayStr(), c.next_nurture_date) : 999; } return 999; };
 
-export default function CRM() {
+function CRM({ auth }) {
+  const user = auth.user;
+  const activeWs = auth.workspaceId;
+  const TEAM = (auth.members && auth.members.length) ? auth.members : [auth.user];
   const [contacts, setContacts] = useState([]);
   const [messages, setMessages] = useState([]);
   const [nurtureM, setNurtureM] = useState([]);
@@ -46,7 +49,6 @@ export default function CRM() {
   const [allKpiEntries, setAllKpiEntries] = useState([]);
   const [allActivityLog, setAllActivityLog] = useState([]);
   const [victories, setVictories] = useState([]);
-  const [user, setUser] = useState(() => { if (typeof window !== "undefined") return localStorage.getItem("lf-user") || "Leon"; return "Leon"; });
   const [view, setView] = useState("dashboard");
   const [modal, setModal] = useState(null);
   const [filter, setFilter] = useState("all");
@@ -62,8 +64,6 @@ export default function CRM() {
   const [selected, setSelected] = useState(new Set());
   const [activeOutreachSeq, setActiveOutreachSeq] = useState("Default");
   const [activeNurtureSeq, setActiveNurtureSeq] = useState("Default");
-
-  useEffect(() => { if (typeof window !== "undefined") localStorage.setItem("lf-user", user); }, [user]);
 
   useEffect(() => {
     const load = async () => {
@@ -110,7 +110,7 @@ export default function CRM() {
   }, []);
 
   const flash = (m, t = "success") => { setToast({ m, t }); setTimeout(() => setToast(null), 2500); };
-  const logActivity = async (person, action, detail = "") => { await supabase.from("activity_log").insert({ person, action, detail }); };
+  const logActivity = async (person, action, detail = "") => { await supabase.from("activity_log").insert({ person, action, detail, workspace_id: activeWs }); };
 
   // Contact CRUD
   // Normalize an Instagram URL/handle for comparison
@@ -140,7 +140,7 @@ export default function CRM() {
       return cIG && cIG === i;
     });
   };
-  const addContact = async (d) => { const dup = findDuplicate(d); if (dup) { flash(`⚠️ ${dup.name} already exists with that Instagram (${dup.assigned_to || "unassigned"})`, "error"); return false; } const { error } = await supabase.from("contacts").insert({ name: d.name, company: d.company || "", ig: d.ig || "", email: d.email || "", youtube: d.youtube || "", website: d.website || "", linkedin: d.linkedin || "", notes: d.notes || "", stage: "new", current_step: 0, nurture_step: 0, created_at: todayStr(), next_follow_up: todayStr(), pipeline_value: d.pipeline_value || 0, assigned_to: "", outreach_sequence: d.outreach_sequence || "Default", nurture_sequence: d.nurture_sequence || "Default", history: [], nurture_history: [] }); if (!error) { flash(`${d.name} added`); logActivity(user, "added_lead", d.name); return true; } else { flash("Error: " + error.message, "error"); return false; } };
+  const addContact = async (d) => { const dup = findDuplicate(d); if (dup) { flash(`⚠️ ${dup.name} already exists with that Instagram (${dup.assigned_to || "unassigned"})`, "error"); return false; } const { error } = await supabase.from("contacts").insert({ name: d.name, company: d.company || "", ig: d.ig || "", email: d.email || "", youtube: d.youtube || "", website: d.website || "", linkedin: d.linkedin || "", notes: d.notes || "", stage: "new", current_step: 0, nurture_step: 0, created_at: todayStr(), next_follow_up: todayStr(), pipeline_value: d.pipeline_value || 0, assigned_to: "", outreach_sequence: d.outreach_sequence || "Default", nurture_sequence: d.nurture_sequence || "Default", history: [], nurture_history: [], workspace_id: activeWs }); if (!error) { flash(`${d.name} added`); logActivity(user, "added_lead", d.name); return true; } else { flash("Error: " + error.message, "error"); return false; } };
   const updateContact = async (id, data) => { await supabase.from("contacts").update({ ...data, updated_at: new Date().toISOString() }).eq("id", id); };
   const deleteContact = async (id) => { const name = contacts.find(c => c.id === id)?.name; await supabase.from("contacts").delete().eq("id", id); setDelId(null); if (detailId === id) setDetailId(null); flash(`${name} removed`, "info"); };
   const bulkDelete = async () => { if (selected.size === 0) return; const ids = Array.from(selected); await supabase.from("contacts").delete().in("id", ids); setSelected(new Set()); flash(`Deleted ${ids.length} leads`, "info"); };
@@ -223,7 +223,7 @@ export default function CRM() {
   const closeDeal = async (id, v) => { const c = contacts.find(x => x.id === id); await updateContact(id, { stage: "closed", closed_value: v, closed_at: todayStr(), next_follow_up: null, next_nurture_date: null }); logActivity(user, "closed_deal", `${c?.name} for ${fmtMoney(v)}`); flash(`Closed for ${fmtMoney(v)}!`); setCloseId(null); };
 
   // Message CRUD
-  const addMsg = async (d, type) => { const list = (type === "outreach" ? messages : nurtureM).filter(m => (m.sequence_name || "Default") === (d.sequence_name || "Default")); await supabase.from("message_templates").insert({ ...d, step: list.length + 1, type }); flash("Added!"); };
+  const addMsg = async (d, type) => { const list = (type === "outreach" ? messages : nurtureM).filter(m => (m.sequence_name || "Default") === (d.sequence_name || "Default")); await supabase.from("message_templates").insert({ ...d, step: list.length + 1, type, workspace_id: activeWs }); flash("Added!"); };
   const updateMsg = async (id, d) => { await supabase.from("message_templates").update(d).eq("id", id); flash("Updated!"); };
   const deleteMsg = async (id, type) => { await supabase.from("message_templates").delete().eq("id", id); const list = (type === "outreach" ? messages : nurtureM).filter(m => m.id !== id); for (let i = 0; i < list.length; i++) { await supabase.from("message_templates").update({ step: i + 1 }).eq("id", list[i].id); } flash("Removed", "info"); };
 
@@ -269,7 +269,7 @@ export default function CRM() {
       const nc = Math.max(0, (existing.count || 0) + delta);
       await supabase.from("kpi_entries").update({ count: nc, updated_at: new Date().toISOString() }).eq("id", existing.id);
     } else if (delta > 0) {
-      await supabase.from("kpi_entries").insert({ person, category, count: delta, date });
+      await supabase.from("kpi_entries").insert({ person, category, count: delta, date, workspace_id: activeWs });
     }
     const { data: fresh } = await supabase.from("kpi_entries").select("*").gte("date", addDays(todayStr(), -30));
     if (fresh) setKpiEntries(fresh);
@@ -285,7 +285,7 @@ export default function CRM() {
     if (!d.name?.trim()) return;
     if (kpiCategories.some(c => c.name.toLowerCase() === d.name.trim().toLowerCase())) { flash("That name already exists", "error"); return; }
     const maxOrder = kpiCategories.reduce((m, c) => Math.max(m, c.sort_order || 0), 0);
-    const { error } = await supabase.from("kpi_categories").insert({ name: d.name.trim(), color: d.color || "#3B82F6", cadence: d.cadence || "daily", daily_target: d.daily_target ?? 1, weekly_target: d.weekly_target ?? 1, sort_order: maxOrder + 1, active: true });
+    const { error } = await supabase.from("kpi_categories").insert({ name: d.name.trim(), color: d.color || "#3B82F6", cadence: d.cadence || "daily", daily_target: d.daily_target ?? 1, weekly_target: d.weekly_target ?? 1, sort_order: maxOrder + 1, active: true, workspace_id: activeWs });
     if (error) flash("Error: " + error.message, "error"); else flash(`Added "${d.name.trim()}"`);
   };
   const updateCategory = async (id, d) => { await supabase.from("kpi_categories").update(d).eq("id", id); };
@@ -374,7 +374,7 @@ export default function CRM() {
     }
 
     if (rows.length > 0) {
-      const { error } = await supabase.from("contacts").insert(rows);
+      const { error } = await supabase.from("contacts").insert(rows.map(r => ({ ...r, workspace_id: activeWs })));
       if (!error) {
         const skipMsg = (skippedExisting + skippedInBatch) > 0
           ? ` (${skippedExisting} already in CRM${skippedInBatch > 0 ? `, ${skippedInBatch} duplicates within file` : ""} skipped)`
@@ -462,6 +462,7 @@ export default function CRM() {
           top_g: winners.first,
           bottom_g: winners.second,
           gayboy: winners.third,
+          workspace_id: activeWs,
         });
       }
     }
@@ -1051,7 +1052,7 @@ export default function CRM() {
     const allList = type === "outreach" ? messages : nurtureM;
     const seqs = getSequences(type);
     const list = allList.filter(m => (m.sequence_name || "Default") === activeSeq).sort((a, b) => a.step - b.step);
-    const createSeq = async () => { if (!newSeqName.trim()) return; await supabase.from("message_templates").insert({ name: "Message 1", channel: "ig", delay_days: 0, body: "Hey {{name}}, ", step: 1, type, sequence_name: newSeqName.trim() }); setActiveSeq(newSeqName.trim()); setNewSeqName(""); setShowNewSeq(false); flash(`Sequence "${newSeqName.trim()}" created!`); };
+    const createSeq = async () => { if (!newSeqName.trim()) return; await supabase.from("message_templates").insert({ name: "Message 1", channel: "ig", delay_days: 0, body: "Hey {{name}}, ", step: 1, type, sequence_name: newSeqName.trim(), workspace_id: activeWs }); setActiveSeq(newSeqName.trim()); setNewSeqName(""); setShowNewSeq(false); flash(`Sequence "${newSeqName.trim()}" created!`); };
     const reorder = async (fromIdx, toIdx) => { if (fromIdx === toIdx) return; const reordered = [...list]; const [moved] = reordered.splice(fromIdx, 1); reordered.splice(toIdx, 0, moved); for (let i = 0; i < reordered.length; i++) { await supabase.from("message_templates").update({ step: i + 1 }).eq("id", reordered[i].id); } flash("Reordered!"); setDragIdx(null); setDragOverIdx(null); };
     return (<div style={S.content}>
       <div style={S.header}><div><h1 style={S.h1}>{type === "outreach" ? "Outreach Sequences" : "Nurture Sequences"}</h1><p style={S.sub}>Drag messages to reorder. Top = first message sent.</p></div><div style={{ display: "flex", gap: 6 }}><button style={S.ghost} onClick={() => setShowNewSeq(!showNewSeq)}>+ New Sequence</button><button style={S.pri} onClick={() => setModal({ type: "msg", data: null, msgType: type, seqName: activeSeq })}>+ Add Message</button></div></div>
@@ -1323,7 +1324,7 @@ export default function CRM() {
       {toast && <div style={{ ...S.toast, background: toast.t === "error" ? "#EF4444" : toast.t === "info" ? "#3B82F6" : "#10B981" }}>{toast.m}</div>}
       <div style={S.side}>
         <div style={S.logo}><div style={S.logoI}>⬡</div><span style={{ fontFamily: "'Outfit',sans-serif", fontWeight: 700, fontSize: 16, color: "#F1F5F9" }}>LeadFlow</span></div>
-        <div style={{ padding: "0 12px 10px", borderBottom: "1px solid #1E293B" }}><div style={{ fontSize: 9, color: "#64748B", fontWeight: 600, textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 4 }}>Logged in as</div><select value={user} onChange={e => setUser(e.target.value)} style={{ width: "100%", background: "#0B1120", border: "1px solid #1E293B", borderRadius: 8, padding: "7px 8px", color: "#F1F5F9", fontSize: 12, fontWeight: 600, fontFamily: "'DM Sans',sans-serif", outline: "none", cursor: "pointer" }}>{TEAM.map(t => <option key={t} value={t}>{t}</option>)}</select></div>
+        <div style={{ padding: "0 12px 10px", borderBottom: "1px solid #1E293B" }}><div style={{ fontSize: 9, color: "#64748B", fontWeight: 600, textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 4 }}>Signed in as</div><div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}><div style={{ minWidth: 0 }}><div style={{ color: "#F1F5F9", fontSize: 13, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{user}{auth.isAdmin && <span style={{ color: "#C99A3B", fontSize: 9, marginLeft: 5 }}>ADMIN</span>}</div><div style={{ color: "#64748B", fontSize: 10, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{auth.workspaceName}</div></div><button onClick={auth.onLogout} title="Log out" style={{ flexShrink: 0, background: "transparent", border: "1px solid #334155", borderRadius: 7, color: "#94A3B8", fontSize: 10, fontWeight: 600, padding: "5px 8px", cursor: "pointer", fontFamily: "inherit" }}>Log out</button></div></div>
         <nav style={{ display: "flex", flexDirection: "column", gap: 1, padding: "6px 8px", flex: 1 }}>{NAV.map(n => (<button key={n.id} onClick={() => { setView(n.id); setDetailId(null); }} style={{ ...S.nav, ...(view === n.id ? S.navOn : {}) }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d={n.d} /></svg><span>{n.label}</span>{n.badge && <span style={S.badge}>{n.badge}</span>}</button>))}</nav>
         <div style={{ padding: "10px 12px", borderTop: "1px solid #1E293B", display: "flex", flexDirection: "column", gap: 4 }}><div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}><span style={{ color: "#64748B" }}>Leads</span><span style={{ color: "#F1F5F9", fontWeight: 700 }}>{contacts.length}</span></div><div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}><span style={{ color: "#64748B" }}>Pipeline</span><span style={{ color: "#10B981", fontWeight: 700 }}>{fmtMoney(stats.pipeline)}</span></div><div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}><span style={{ color: "#64748B" }}>Closed</span><span style={{ color: "#10B981", fontWeight: 700 }}>{fmtMoney(stats.closedTotal)}</span></div></div>
       </div>
@@ -1606,3 +1607,131 @@ const S = {
   cBox: { background: "#0F172A", borderRadius: 14, border: "1px solid #1E293B", padding: 20, boxShadow: "0 20px 60px rgba(0,0,0,0.5)" },
   x: { background: "transparent", border: "none", color: "#64748B", fontSize: 16, cursor: "pointer", padding: 4, lineHeight: 1 },
 };
+
+// ============ AUTH LAYER ============
+function AuthScreen({ onDone }) {
+  const [mode, setMode] = useState("login");
+  const [email, setEmail] = useState("");
+  const [pw, setPw] = useState("");
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const submit = async () => {
+    setErr(""); setBusy(true);
+    try {
+      if (mode === "signup") {
+        const { error } = await supabase.auth.signUp({ email: email.trim(), password: pw, options: { data: { display_name: name.trim() || email.split("@")[0] } } });
+        if (error) { setErr(error.message); setBusy(false); return; }
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password: pw });
+        if (error) { setErr(error.message); setBusy(false); return; }
+      }
+      onDone();
+    } catch (e) { setErr(e.message || "Something went wrong"); setBusy(false); }
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#0B1120", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" }}>
+      <div style={{ width: "100%", maxWidth: 380 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, justifyContent: "center", marginBottom: 22 }}>
+          <div style={{ width: 34, height: 34, borderRadius: 8, background: "linear-gradient(135deg,#3B82F6,#6366F1)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: "#fff" }}>⬡</div>
+          <span style={{ fontFamily: "'Outfit',sans-serif", fontWeight: 700, fontSize: 22, color: "#F1F5F9" }}>LeadFlow</span>
+        </div>
+        <div style={{ background: "#0F172A", border: "1px solid #1E293B", borderRadius: 14, padding: 22 }}>
+          <h1 style={{ color: "#F1F5F9", fontSize: 18, fontWeight: 700, fontFamily: "'Outfit',sans-serif", margin: "0 0 4px" }}>{mode === "login" ? "Welcome back" : "Create your account"}</h1>
+          <p style={{ color: "#64748B", fontSize: 12, margin: "0 0 18px" }}>{mode === "login" ? "Sign in to your workspace." : "Use the email your access was granted to."}</p>
+          {mode === "signup" && (
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ color: "#94A3B8", fontSize: 11, fontWeight: 600, display: "block", marginBottom: 5 }}>Your name</label>
+              <input value={name} onChange={e => setName(e.target.value)} placeholder="Jane Doe" style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid #1E293B", background: "#0B1120", color: "#F1F5F9", fontSize: 13, fontFamily: "inherit", outline: "none", boxSizing: "border-box" }} />
+            </div>
+          )}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ color: "#94A3B8", fontSize: 11, fontWeight: 600, display: "block", marginBottom: 5 }}>Email</label>
+            <input value={email} onChange={e => setEmail(e.target.value)} placeholder="you@email.com" autoComplete="email" style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid #1E293B", background: "#0B1120", color: "#F1F5F9", fontSize: 13, fontFamily: "inherit", outline: "none", boxSizing: "border-box" }} />
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ color: "#94A3B8", fontSize: 11, fontWeight: 600, display: "block", marginBottom: 5 }}>Password</label>
+            <input type="password" value={pw} onChange={e => setPw(e.target.value)} placeholder="••••••••" autoComplete={mode === "login" ? "current-password" : "new-password"} onKeyDown={e => e.key === "Enter" && submit()} style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid #1E293B", background: "#0B1120", color: "#F1F5F9", fontSize: 13, fontFamily: "inherit", outline: "none", boxSizing: "border-box" }} />
+          </div>
+          {err && <div style={{ background: "#EF444415", border: "1px solid #EF444440", color: "#FCA5A5", fontSize: 12, padding: "8px 10px", borderRadius: 8, marginBottom: 12 }}>{err}</div>}
+          <button onClick={submit} disabled={busy || !email || !pw} style={{ width: "100%", padding: "11px", borderRadius: 8, border: "none", background: "linear-gradient(135deg,#3B82F6,#6366F1)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: busy ? "default" : "pointer", fontFamily: "inherit", opacity: busy || !email || !pw ? 0.6 : 1 }}>{busy ? "Please wait..." : mode === "login" ? "Sign in" : "Create account"}</button>
+          <div style={{ textAlign: "center", marginTop: 14 }}>
+            <button onClick={() => { setErr(""); setMode(mode === "login" ? "signup" : "login"); }} style={{ background: "none", border: "none", color: "#3B82F6", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+              {mode === "login" ? "Got access? Create your account" : "Already have an account? Sign in"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CenterMessage({ title, body, action, onAction }) {
+  return (
+    <div style={{ minHeight: "100vh", background: "#0B1120", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Inter',sans-serif" }}>
+      <div style={{ maxWidth: 380, textAlign: "center" }}>
+        <h1 style={{ color: "#F1F5F9", fontSize: 18, fontWeight: 700, fontFamily: "'Outfit',sans-serif" }}>{title}</h1>
+        <p style={{ color: "#94A3B8", fontSize: 13, lineHeight: 1.5, marginTop: 8 }}>{body}</p>
+        {action && <button onClick={onAction} style={{ marginTop: 16, padding: "9px 16px", borderRadius: 8, border: "1px solid #334155", background: "transparent", color: "#CBD5E1", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>{action}</button>}
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  const [booting, setBooting] = useState(true);
+  const [authed, setAuthed] = useState(false);
+  const [noAccess, setNoAccess] = useState(false);
+  const [ctx, setCtx] = useState(null); // { user, workspaceId, workspaceName, members, isAdmin }
+
+  const loadMembers = async (wsId) => {
+    const { data: mem } = await supabase.from("workspace_members").select("user_id").eq("workspace_id", wsId);
+    const ids = (mem || []).map(m => m.user_id);
+    if (ids.length === 0) return [];
+    const { data: profs } = await supabase.from("profiles").select("id, display_name").in("id", ids);
+    return (profs || []).map(p => p.display_name).filter(Boolean);
+  };
+
+  const resolve = async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) { setAuthed(false); setBooting(false); return; }
+    const uid = session.user.id;
+    const { data: prof } = await supabase.from("profiles").select("*").eq("id", uid).maybeSingle();
+    let { data: mem } = await supabase.from("workspace_members").select("workspace_id, role").eq("user_id", uid);
+    if (!mem || mem.length === 0) {
+      // approved-but-new: claim a fresh empty workspace via the secure function
+      const { data: claimedId, error } = await supabase.rpc("claim_workspace");
+      if (error || !claimedId) { setNoAccess(true); setBooting(false); return; }
+      mem = [{ workspace_id: claimedId, role: "owner" }];
+    }
+    const wsId = mem[0].workspace_id;
+    const { data: ws } = await supabase.from("workspaces").select("name").eq("id", wsId).maybeSingle();
+    const members = await loadMembers(wsId);
+    const myName = prof?.display_name || session.user.email.split("@")[0];
+    setCtx({ user: myName, workspaceId: wsId, workspaceName: ws?.name || "My Workspace", members: members.length ? members : [myName], isAdmin: !!prof?.is_super_admin });
+    setAuthed(true);
+    setNoAccess(false);
+    setBooting(false);
+  };
+
+  useEffect(() => {
+    resolve();
+    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_OUT") { setAuthed(false); setCtx(null); setNoAccess(false); }
+      if (event === "SIGNED_IN") { setBooting(true); resolve(); }
+    });
+    return () => sub?.subscription?.unsubscribe();
+  }, []);
+
+  const logout = async () => { await supabase.auth.signOut(); setAuthed(false); setCtx(null); };
+
+  if (booting) return (<div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "#0B1120" }}><div style={{ width: 32, height: 32, border: "3px solid #1E293B", borderTop: "3px solid #3B82F6", borderRadius: "50%", animation: "spin .8s linear infinite" }} /></div>);
+
+  if (noAccess) return (<CenterMessage title="No access yet" body="This email hasn't been approved. If you're a mentee, message Leon to get added, then sign in again." action="Back to sign in" onAction={logout} />);
+
+  if (!authed || !ctx) return <AuthScreen onDone={resolve} />;
+
+  return <CRM key={ctx.workspaceId} auth={{ ...ctx, onLogout: logout }} />;
+}
