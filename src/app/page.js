@@ -226,6 +226,13 @@ function CRM({ auth }) {
   const addMsg = async (d, type) => { const list = (type === "outreach" ? messages : nurtureM).filter(m => (m.sequence_name || "Default") === (d.sequence_name || "Default")); await supabase.from("message_templates").insert({ ...d, step: list.length + 1, type, workspace_id: activeWs }); flash("Added!"); };
   const updateMsg = async (id, d) => { await supabase.from("message_templates").update(d).eq("id", id); flash("Updated!"); };
   const deleteMsg = async (id, type) => { await supabase.from("message_templates").delete().eq("id", id); const list = (type === "outreach" ? messages : nurtureM).filter(m => m.id !== id); for (let i = 0; i < list.length; i++) { await supabase.from("message_templates").update({ step: i + 1 }).eq("id", list[i].id); } flash("Removed", "info"); };
+  const deleteSequence = async (name, type) => {
+    if (name === "Default") { flash("The Default sequence can't be deleted", "error"); return; }
+    const list = (type === "outreach" ? messages : nurtureM).filter(m => (m.sequence_name || "Default") === name);
+    if (!confirm(`Delete the "${name}" sequence and its ${list.length} message${list.length !== 1 ? "s" : ""}? Any leads using it will fall back to your Default sequence.`)) return;
+    for (const m of list) { await supabase.from("message_templates").delete().eq("id", m.id); }
+    flash(`Deleted "${name}" sequence`, "info");
+  };
 
   // KPI functions (editable categories)
   // Active categories, split by how they're tracked
@@ -1057,7 +1064,7 @@ function CRM({ auth }) {
     return (<div style={S.content}>
       <div style={S.header}><div><h1 style={S.h1}>{type === "outreach" ? "Outreach Sequences" : "Nurture Sequences"}</h1><p style={S.sub}>Drag messages to reorder. Top = first message sent.</p></div><div style={{ display: "flex", gap: 6 }}><button style={S.ghost} onClick={() => setShowNewSeq(!showNewSeq)}>+ New Sequence</button><button style={S.pri} onClick={() => setModal({ type: "msg", data: null, msgType: type, seqName: activeSeq })}>+ Add Message</button></div></div>
       {showNewSeq && <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "end" }}><div style={S.fi}><label style={S.lb}>Sequence Name</label><input style={S.ip} value={newSeqName} onChange={e => setNewSeqName(e.target.value)} placeholder="e.g. Software CEOs" onKeyDown={e => e.key === "Enter" && createSeq()} /></div><button style={S.pri} onClick={createSeq}>Create</button></div>}
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 16 }}>{seqs.map(s => <button key={s} style={{ ...S.pill, ...(activeSeq === s ? S.pillOn : {}) }} onClick={() => setActiveSeq(s)}>{s} <span style={{ opacity: .5 }}>{allList.filter(m => (m.sequence_name || "Default") === s).length}</span></button>)}</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 16, alignItems: "center" }}>{seqs.map(s => <button key={s} style={{ ...S.pill, ...(activeSeq === s ? S.pillOn : {}) }} onClick={() => setActiveSeq(s)}>{s} <span style={{ opacity: .5 }}>{allList.filter(m => (m.sequence_name || "Default") === s).length}</span></button>)}{activeSeq !== "Default" && <button style={{ ...S.pill, color: "#EF4444", borderColor: "#EF444440", marginLeft: 4 }} onClick={async () => { await deleteSequence(activeSeq, type); setActiveSeq("Default"); }}>🗑 Delete &quot;{activeSeq}&quot;</button>}</div>
       <div style={{ display: "flex", flexDirection: "column" }}>{list.map((m, i) => { const hasVariants = m.variants && m.variants.length > 0; const allLabels = ["A", ...(m.variants || []).map(v => v.label)]; const stats = allLabels.map(label => { const sent = contacts.filter(c => (c.history || []).some(h => h.name === m.name && (h.variant || "A") === label)).length; const replied = contacts.filter(c => ["responded", "booked", "closed"].includes(c.stage) && (c.history || []).some(h => h.name === m.name && (h.variant || "A") === label)).length; return { label, sent, replied, rate: sent > 0 ? Math.round((replied / sent) * 100) : 0 }; }); return (<div key={m.id} draggable onDragStart={() => setDragIdx(i)} onDragOver={e => { e.preventDefault(); setDragOverIdx(i); }} onDragEnd={() => { if (dragIdx !== null && dragOverIdx !== null) reorder(dragIdx, dragOverIdx); setDragIdx(null); setDragOverIdx(null); }} onDrop={e => e.preventDefault()} style={{ opacity: dragIdx === i ? 0.4 : 1 }}>{dragOverIdx === i && dragIdx !== null && dragIdx !== i && <div style={{ height: 3, background: "#3B82F6", borderRadius: 2, margin: "2px 0" }} />}<div style={{ background: "#0F172A", borderRadius: 10, border: `1px solid ${type === "nurture" ? "#8B5CF620" : "#1E293B"}`, overflow: "hidden", cursor: "grab" }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", borderBottom: "1px solid #1E293B" }}><div style={{ display: "flex", alignItems: "center", gap: 8 }}><div style={{ color: "#475569", fontSize: 14, cursor: "grab", padding: "0 4px", userSelect: "none" }}>⠿</div><div style={{ width: 24, height: 24, borderRadius: "50%", background: type === "nurture" ? "linear-gradient(135deg,#8B5CF6,#EC4899)" : "linear-gradient(135deg,#3B82F6,#6366F1)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700 }}>{i + 1}</div><div><div style={{ display: "flex", alignItems: "center", gap: 6 }}><span style={{ color: "#F1F5F9", fontWeight: 600, fontSize: 13 }}>{m.name}</span>{hasVariants && <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 5px", borderRadius: 4, background: "#F59E0B20", color: "#F59E0B" }}>A/B</span>}</div><div style={{ color: "#64748B", fontSize: 10 }}>{m.channel === "ig" ? "📱 IG" : "📧 Email"} · {m.delay_days === 0 ? "Immediately" : `${m.delay_days}d`}</div></div></div><div style={{ display: "flex", gap: 3 }}><button style={{ ...S.act, color: "#94A3B8" }} onClick={() => setModal({ type: "msg", data: m, msgType: type, seqName: activeSeq })}>✎</button>{list.length > 1 && <button style={{ ...S.act, color: "#EF4444" }} onClick={() => deleteMsg(m.id, type)}>✕</button>}</div></div><div style={{ padding: "10px 12px", fontSize: 12, lineHeight: 1.6, color: "#94A3B8", whiteSpace: "pre-wrap" }}>{m.body}</div>{hasVariants && stats.some(s => s.sent > 0) && <div style={{ padding: "8px 12px", borderTop: "1px solid #1E293B", display: "flex", gap: 12, flexWrap: "wrap" }}>{stats.map(s => (<div key={s.label} style={{ display: "flex", alignItems: "center", gap: 6 }}><span style={{ fontSize: 10, fontWeight: 700, color: s.label === "A" ? "#3B82F6" : "#F59E0B", width: 14 }}>{s.label}</span><span style={{ fontSize: 10, color: "#64748B" }}>{s.sent} sent</span><span style={{ fontSize: 10, color: "#64748B" }}>·</span><span style={{ fontSize: 10, color: s.rate > 0 ? "#10B981" : "#475569", fontWeight: 600 }}>{s.replied} replied ({s.rate}%)</span></div>))}</div>}</div>{i < list.length - 1 && <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 16px" }}><div style={{ flex: 1, height: 1, background: "#1E293B" }} /><span style={{ color: "#475569", fontSize: 9 }}>{list[i + 1]?.delay_days === 0 ? "Immediately" : `Wait ${list[i + 1]?.delay_days}d`}</span><div style={{ flex: 1, height: 1, background: "#1E293B" }} /></div>}</div>); })}{list.length === 0 && <div style={S.empty}><p style={{ color: "#64748B" }}>No messages in this sequence yet. Click &quot;+ Add Message&quot; to start.</p></div>}</div>
     </div>); };
 
@@ -1798,6 +1805,7 @@ export default function App() {
   const [authed, setAuthed] = useState(false);
   const [noAccess, setNoAccess] = useState(false);
   const [ctx, setCtx] = useState(null); // { user, workspaceId, workspaceName, members, isAdmin }
+  const authedRef = useRef(false);
 
   const loadMembers = async (wsId) => {
     const { data: mem } = await supabase.from("workspace_members").select("user_id").eq("workspace_id", wsId);
@@ -1824,6 +1832,7 @@ export default function App() {
     const members = await loadMembers(wsId);
     const myName = prof?.display_name || session.user.email.split("@")[0];
     setCtx({ user: myName, workspaceId: wsId, workspaceName: ws?.name || "My Workspace", members: members.length ? members : [myName], isAdmin: !!prof?.is_super_admin });
+    authedRef.current = true;
     setAuthed(true);
     setNoAccess(false);
     setBooting(false);
@@ -1832,8 +1841,10 @@ export default function App() {
   useEffect(() => {
     resolve();
     const { data: sub } = supabase.auth.onAuthStateChange((event) => {
-      if (event === "SIGNED_OUT") { setAuthed(false); setCtx(null); setNoAccess(false); }
-      if (event === "SIGNED_IN") { setBooting(true); resolve(); }
+      if (event === "SIGNED_OUT") { authedRef.current = false; setAuthed(false); setCtx(null); setNoAccess(false); }
+      // Only resolve on a genuine new sign-in. Tab focus re-fires SIGNED_IN, and re-resolving there
+      // would unmount the app and bounce you to the dashboard. Skip it if already signed in.
+      else if (event === "SIGNED_IN" && !authedRef.current) { resolve(); }
     });
     return () => sub?.subscription?.unsubscribe();
   }, []);
@@ -1847,7 +1858,7 @@ export default function App() {
   };
   const exitWorkspace = () => setViewing(null);
 
-  const logout = async () => { await supabase.auth.signOut(); setAuthed(false); setCtx(null); setViewing(null); };
+  const logout = async () => { authedRef.current = false; await supabase.auth.signOut(); setAuthed(false); setCtx(null); setViewing(null); };
 
   if (booting) return (<div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "#0B1120" }}><div style={{ width: 32, height: 32, border: "3px solid #1E293B", borderTop: "3px solid #3B82F6", borderRadius: "50%", animation: "spin .8s linear infinite" }} /></div>);
 
